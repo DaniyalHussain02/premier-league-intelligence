@@ -18,14 +18,14 @@
     - [x] `git status` and `git check-ignore` confirm ignored secret/local paths.
   - **Test:** `git status --short`; `git check-ignore .env .venv/test node_modules/test.sqlite` (adapt sample paths to ignored patterns); manually inspect staged files for secrets.
 
-- [ ] **T02 — Lightweight frontend and Python toolchain**
+- [x] **T02 — Lightweight frontend and Python toolchain**
   - **Goal:** Scaffold a runnable React/Vite/TypeScript frontend and Python package with basic lint/test/build commands; request approval before adding dependencies.
   - **Files:** `.nvmrc`, `frontend/package.json`, `frontend/package-lock.json`, `frontend/tsconfig*.json`, `frontend/vite.config.ts`, `frontend/src/*`, `engine/pyproject.toml`, `engine/requirements.lock`, `engine/src/pl_intel/__init__.py`, `engine/tests/test_smoke.py`.
   - **Acceptance:**
-    - [ ] Active Node LTS major and exact npm/Python dependencies are pinned and documented; Python runtime is 3.12.
-    - [ ] Frontend scripts `dev`, `test`, `lint`, `build` work; TypeScript strict mode is enabled.
-    - [ ] pytest and Ruff run on a tiny Python smoke test; no Docker, database server, or paid service.
-    - [ ] Basic GitHub CI runs lint, type check, tests, and build using standard free runners with minimal permissions.
+    - [x] Active Node LTS major and exact npm/Python dependencies are pinned and documented; Python runtime is 3.12.
+    - [x] Frontend scripts `dev`, `test`, `lint`, `build` work; TypeScript strict mode is enabled.
+    - [x] pytest and Ruff run on a tiny Python smoke test; no Docker, database server, or paid service.
+    - [x] Basic GitHub CI runs lint, type check, tests, and build using standard free runners with minimal permissions.
   - **Test:** `cd frontend && npm ci && npm run test -- --run && npm run lint && npx tsc --noEmit && npm run build`; `python -m pytest engine/tests -q`; `python -m ruff check engine`; verify CI result.
 
 - [ ] **T03 — Data, rules, and hosting feasibility register (release gate)**
