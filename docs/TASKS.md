@@ -34,9 +34,9 @@
   - **Acceptance:**
     - [ ] Record dated evidence/links for OpenFootball historical coverage and permitted use, football-data.org free EPL access, rate limits, delayed scores, and derived-data redistribution rights.
     - [ ] Verify the active season's **20 teams and complete 380-fixture inventory**, with postponed/cancelled status semantics and canonical IDs.
-    - [ ] Record official season-specific tiebreak rules and what cannot be determined from available data.
+    - [x] Record official season-specific tiebreak rules and what cannot be determined from available data.
     - [ ] Verify at least one completed backtest season and a free **no-card** static-hosting path; mark each gate PASS/BLOCKED with evidence.
-    - [ ] If any gate is blocked, explicitly prohibit production publication; do not substitute guessed facts.
+    - [x] If any gate is blocked, explicitly prohibit production publication; do not substitute guessed facts.
   - **Test:** Review evidence URLs, terms, fixture counts, and PASS/BLOCKED statuses manually; no production fetch or deploy until approved.
 
 ## Phase 2 — Data and model
