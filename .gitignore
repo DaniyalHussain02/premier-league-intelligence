@@ -1,0 +1,36 @@
+# Local secrets and credentials
+.env*
+!.env.example
+.aws/
+.ssh/
+.netrc
+.npmrc
+.pypirc
+credentials/
+credentials.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python and frontend tooling
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+node_modules/
+dist/
+coverage/
+
+# Temporary databases and raw inputs
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite*
+raw-api-dumps/
+raw_api_dumps/
+tmp/

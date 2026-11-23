@@ -8,14 +8,14 @@
 
 ## Phase 1 — Foundation and feasibility
 
-- [ ] **T01 — Repository skeleton, Git hygiene, and documentation**
+- [x] **T01 — Repository skeleton, Git hygiene, and documentation**
   - **Goal:** Initialize Git (if needed) and create the minimal directory structure without implementing features.
   - **Files:** `.gitignore`, `.env.example`, `README.md`, `frontend/`, `engine/`, `docs/`, `.github/workflows/` (placeholder directories only as needed).
   - **Acceptance:**
-    - [ ] `.gitignore` excludes `.env*` except `.env.example`, `.venv/`, `node_modules/`, `dist/`, `*.sqlite*`, caches, raw API dumps, and local credentials; does not accidentally exclude approved public forecast JSON.
-    - [ ] `.env.example` contains placeholder variable **names only**, no real values; actual `.env` files are never opened or modified by Codex.
-    - [ ] `README.md` documents the repository layout and zero-cost restrictions; `docs/PRD.md`, `docs/TRD.md`, `docs/SECURITY.md`, and this task list are present.
-    - [ ] `git status` and `git check-ignore` confirm ignored secret/local paths.
+    - [x] `.gitignore` excludes `.env*` except `.env.example`, `.venv/`, `node_modules/`, `dist/`, `*.sqlite*`, caches, raw API dumps, and local credentials; does not accidentally exclude approved public forecast JSON.
+    - [x] `.env.example` contains placeholder variable **names only**, no real values; actual `.env` files are never opened or modified by Codex.
+    - [x] `README.md` documents the repository layout and zero-cost restrictions; `docs/PRD.md`, `docs/TRD.md`, `docs/SECURITY.md`, and this task list are present.
+    - [x] `git status` and `git check-ignore` confirm ignored secret/local paths.
   - **Test:** `git status --short`; `git check-ignore .env .venv/test node_modules/test.sqlite` (adapt sample paths to ignored patterns); manually inspect staged files for secrets.
 
 - [ ] **T02 — Lightweight frontend and Python toolchain**
