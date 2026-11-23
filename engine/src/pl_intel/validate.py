@@ -1,10 +1,19 @@
 """Validate canonical records before passing them to SQLite."""
 
+import re
 from datetime import date, datetime, timedelta
 
-from pl_intel.schemas import Fixture, FixtureStatus, Season, SeasonStatus, TeamSourceId
+from pl_intel.schemas import (
+    Fixture,
+    FixtureStatus,
+    ReschedulingApproval,
+    Season,
+    SeasonStatus,
+    TeamSourceId,
+)
 
 _MAX_SQLITE_INTEGER = 2**63 - 1
+_CANONICAL_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 def require_text(value: str) -> None:
@@ -17,13 +26,23 @@ def require_text(value: str) -> None:
         raise ValueError("Expected nonempty text without surrounding whitespace or NUL")
 
 
+def require_canonical_id(value: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) > 64
+        or not _CANONICAL_ID.fullmatch(value)
+    ):
+        raise ValueError("Invalid canonical identifier")
+
+
 def require_date(value: date) -> None:
     if type(value) is not date:
         raise ValueError("Expected a calendar date")
 
 
 def validate_season(season: Season) -> None:
-    for value in (season.season_id, season.ruleset_version, season.source_ref):
+    require_canonical_id(season.season_id)
+    for value in (season.ruleset_version, season.source_ref):
         require_text(value)
     require_date(season.start_date)
     require_date(season.end_date)
@@ -34,7 +53,8 @@ def validate_season(season: Season) -> None:
 
 
 def validate_team_source(mapping: TeamSourceId) -> None:
-    for value in (mapping.provider, mapping.external_id, mapping.team_id):
+    require_canonical_id(mapping.team_id)
+    for value in (mapping.provider, mapping.external_id):
         require_text(value)
     for boundary in (mapping.valid_from, mapping.valid_to):
         if boundary is not None:
@@ -52,16 +72,23 @@ def _require_utc(value: datetime) -> None:
         raise ValueError("Expected a timezone-aware UTC timestamp")
 
 
+def validate_rescheduling_approval(approval: ReschedulingApproval) -> None:
+    require_canonical_id(approval.season_id)
+    require_canonical_id(approval.fixture_id)
+    _require_utc(approval.kickoff_utc)
+    require_text(approval.source_ref)
+
+
 def validate_fixture(fixture: Fixture) -> None:
     for value in (
         fixture.fixture_id,
         fixture.season_id,
-        fixture.provider,
-        fixture.provider_fixture_id,
         fixture.home_team_id,
         fixture.away_team_id,
     ):
-        require_text(value)
+        require_canonical_id(value)
+    require_text(fixture.provider)
+    require_text(fixture.provider_fixture_id)
     _require_utc(fixture.kickoff_utc)
     _require_utc(fixture.updated_at)
     if fixture.home_team_id == fixture.away_team_id:

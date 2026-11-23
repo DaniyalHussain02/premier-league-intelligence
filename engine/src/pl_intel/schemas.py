@@ -58,3 +58,13 @@ class Fixture:
     updated_at: datetime
     home_goals: int | None = None
     away_goals: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReschedulingApproval:
+    """An exception supplied from a reviewed official fixture amendment."""
+
+    season_id: str
+    fixture_id: str
+    kickoff_utc: datetime
+    source_ref: str
