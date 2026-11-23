@@ -45,9 +45,9 @@
   - **Goal:** Define stable teams, seasons, fixtures, statuses, and relationships independently of provider naming.
   - **Files:** `engine/src/pl_intel/{schemas,db,validate}.py`, `engine/tests/unit/test_schema.py`, `engine/tests/fixtures/`.
   - **Acceptance:**
-    - [ ] Schema has stable canonical team IDs, season ID, provider fixture ID, UTC kickoff, home/away IDs, status, and nullable final scores.
-    - [ ] SQLite enforces unique season/team and provider fixture identities, foreign keys, and parameterized queries.
-    - [ ] Reject duplicate/unmapped teams, invalid scores, impossible statuses, and inconsistent fixture records; no raw untrusted data in public JSON.
+    - [x] Schema has stable canonical team IDs, season ID, provider fixture ID, UTC kickoff, home/away IDs, status, and nullable final scores.
+    - [x] SQLite enforces unique season/team and provider fixture identities, foreign keys, and parameterized queries.
+    - [x] Reject duplicate/unmapped teams, invalid scores, impossible statuses, and inconsistent fixture records; no raw untrusted data in public JSON.
   - **Test:** `python -m pytest engine/tests/unit/test_schema.py -q`; include duplicate-key, malformed-score, and foreign-key cases.
 
 - [ ] **T05 — Historical and current-source adapters**
