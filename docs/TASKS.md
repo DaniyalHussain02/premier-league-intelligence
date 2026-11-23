@@ -41,7 +41,7 @@
 
 ## Phase 2 — Data and model
 
-- [ ] **T04 — Canonical data contracts and temporary SQLite schema**
+- [x] **T04 — Canonical data contracts and temporary SQLite schema**
   - **Goal:** Define stable teams, seasons, fixtures, statuses, and relationships independently of provider naming.
   - **Files:** `engine/src/pl_intel/{schemas,db,validate}.py`, `engine/tests/unit/test_schema.py`, `engine/tests/fixtures/`.
   - **Acceptance:**
