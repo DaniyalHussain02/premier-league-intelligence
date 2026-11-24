@@ -37,6 +37,36 @@ def canonical_fixture_id(season_id: str, home_id: str, away_id: str) -> str:
     return sha256(f"{season_id}:{home_id}:{away_id}".encode("ascii")).hexdigest()
 
 
+class IncompleteInventory(ValueError):
+    """The roster or schedule is missing required entries."""
+
+
+def inventory_team_ids(roster: tuple[Team, ...]) -> set[str]:
+    team_ids = {team.team_id for team in roster}
+    if len(team_ids) != len(roster) or len(roster) > 20:
+        raise ValueError("Season inventory must contain exactly 20 distinct clubs")
+    if len(roster) < 20:
+        raise IncompleteInventory(
+            "Season inventory must contain exactly 20 distinct clubs"
+        )
+    return team_ids
+
+
+def validate_fixture_pairings(
+    team_ids: set[str], pairs: Iterable[tuple[str, str]]
+) -> None:
+    expected = set(permutations(team_ids, 2))
+    seen: set[tuple[str, str]] = set()
+    for pair in pairs:
+        if pair not in expected or pair in seen:
+            raise ValueError("Invalid or duplicate season fixture pairing")
+        seen.add(pair)
+    if seen != expected:
+        raise IncompleteInventory(
+            "Season inventory must contain all 380 directed club pairings"
+        )
+
+
 def normalize_season(
     provider: str,
     season: Season,
@@ -50,9 +80,7 @@ def normalize_season(
     if provider not in {"openfootball", "football-data-org"}:
         raise ValueError("Unsupported fixture provider")
     roster = tuple(teams)
-    team_ids = {team.team_id for team in roster}
-    if len(roster) != 20 or len(team_ids) != 20:
-        raise ValueError("Season inventory must contain exactly 20 distinct clubs")
+    team_ids = inventory_team_ids(roster)
 
     normalized: list[Fixture] = []
     seen_source_ids: set[str] = set()
@@ -98,10 +126,7 @@ def normalize_season(
                     row.away_goals,
                 )
             )
-        if seen_pairs != set(permutations(team_ids, 2)):
-            raise ValueError(
-                "Season inventory must contain all 380 directed club pairings"
-            )
+        validate_fixture_pairings(team_ids, seen_pairs)
 
     if provider == "football-data-org" and len(seen_team_refs) != 20:
         raise ValueError("Season inventory must contain exactly 20 provider team IDs")
