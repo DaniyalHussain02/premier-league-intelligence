@@ -73,14 +73,19 @@
     - Verification passed for 37 focused T06 tests, 58 T05 regression tests, and 145 engine tests in total. Ruff lint, Ruff format, and Git whitespace checks passed.
     - Live provider behavior remains unverified. Official adjustments, qualification boundaries, and exceptional decisions still require independently verified evidence. T03 continues to block production publication.
 
-- [ ] **T07 — Elo strength updates**
+- [x] **T07 — Elo strength updates**
   - **Goal:** Build a deterministic, time-ordered team-strength baseline.
   - **Files:** `engine/src/pl_intel/elo.py`, `engine/tests/unit/test_elo.py`.
   - **Acceptance:**
-    - [ ] Ratings update only from matches completed by the specified cutoff; stable ordering for same-day matches.
-    - [ ] Explicit initialization and season-transition policy; reproducible outputs from frozen data.
-    - [ ] No future results or final-season labels leak into earlier cutoffs.
+    - [x] Ratings update only from matches completed by the specified cutoff; stable ordering for same-day matches.
+    - [x] Explicit initialization and season-transition policy; reproducible outputs from frozen data.
+    - [x] No future results or final-season labels leak into earlier cutoffs.
   - **Test:** `python -m pytest engine/tests/unit/test_elo.py -q`; check cutoff invariance and repeatability.
+  - **Completion note**
+    - Implementation merged at `5560ea3`. [PR #9](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/9)
+    - 46 focused Elo tests and 191 engine tests passed. Engine and frontend GitHub Actions, Ruff lint, Ruff format, and Git whitespace checks passed.
+    - Approved defaults are an initial rating of 1500, home advantage of 60, scale of 400, and K-factor of 20. Replay uses independently verified results with `available_at < cutoff`, ordered by `(available_at, fixture_id)`.
+    - Historical source and fixture identity evidence still require independent verification. The Elo defaults remain provisional pending backtesting. T03 continues to block production publication.
 
 - [ ] **T08 — Poisson match probabilities**
   - **Goal:** Convert pre-match team strengths into valid home/draw/away and scoreline probabilities.
