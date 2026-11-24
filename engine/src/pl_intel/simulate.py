@@ -99,7 +99,11 @@ class SeasonSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class SimulationProvenance:
-    """Source and execution identities plus a publication-neutral content key."""
+    """Source inputs, execution identity, and forecast-output equivalence.
+
+    The output equivalence fingerprint is for comparing forecast outputs only.
+    Never use it as an immutable publication or snapshot ID. T13 owns that ID.
+    """
 
     season_id: str
     cutoff: datetime
@@ -107,7 +111,7 @@ class SimulationProvenance:
     evidence_ref: str
     input_fingerprint: str
     run_fingerprint: str
-    forecast_content_fingerprint: str
+    output_equivalence_fingerprint: str
     simulation: SimulationConfig
     elo: EloConfig
     poisson: PoissonConfig
@@ -173,6 +177,7 @@ def _bounded_history(
 def _fixture_blocker(
     reviewed: ReviewedFixture,
     cutoff: datetime,
+    snapshot_known_at: datetime,
     scores: dict[str, EloMatch],
 ) -> str | None:
     fixture = reviewed.fixture
@@ -182,6 +187,8 @@ def _fixture_blocker(
     # independent result fact establishes when its score became available.
     if reviewed.known_at > cutoff or fixture.updated_at > reviewed.known_at:
         return "fixture_state_not_known_at_cutoff"
+    if reviewed.known_at > snapshot_known_at:
+        return "fixture_revision_after_snapshot"
     if fixture.status is FixtureStatus.FINISHED:
         match = scores.get(fixture.fixture_id)
         if match is None:
@@ -237,6 +244,7 @@ def _canonical_value(value: object) -> object:
 
 
 def _fingerprint(schema: str, fields: object) -> str:
+    # Bump the affected schema version before changing its canonical encoding.
     encoded = dumps(
         {"schema": schema, "fields": fields},
         default=_canonical_value,
@@ -258,6 +266,15 @@ def simulate_season(
     poisson_config: PoissonConfig = _DEFAULT_POISSON,
 ) -> SimulationResult | SimulationBlocked:
     """Freeze a reviewed season at cutoff and either return all trials or block.
+
+    Upstream callers must independently authenticate exact cutoff-specific
+    fixture revisions and result facts before supplying them. Matching
+    references alone cannot establish authenticity. Missing authentication
+    evidence blocks production publication.
+
+    A fixture revision must be known by the snapshot as-of time, which must
+    be on or before the run cutoff. A finished score must be independently
+    available by the fixture review time and strictly before the run cutoff.
 
     A postponed record's evidence must establish that its kickoff is the
     replacement time. Cancelled slots require a reconciled replacement upstream.
@@ -301,7 +318,7 @@ def simulate_season(
     )
     scores = {match.fixture.fixture_id: match for match in history}
     for record in reviewed:
-        reason = _fixture_blocker(record, cutoff, scores)
+        reason = _fixture_blocker(record, cutoff, snapshot.known_at, scores)
         if reason:
             return SimulationBlocked((reason,), fixture_id=record.fixture.fixture_id)
 
@@ -428,7 +445,7 @@ def simulate_season(
     )
     # This is a content comparison key for a future publisher. T09 allocates
     # no snapshot IDs and makes no publication or freshness decisions.
-    content_fingerprint = _fingerprint(
+    output_equivalence_fingerprint = _fingerprint(
         "t09-forecast-content-v1",
         (
             snapshot.season.season_id,
@@ -460,7 +477,7 @@ def simulate_season(
         snapshot.evidence_ref,
         input_fingerprint,
         "",
-        content_fingerprint,
+        output_equivalence_fingerprint,
         config,
         elo_config,
         poisson_config,
@@ -470,7 +487,7 @@ def simulate_season(
     )
     run_fields = asdict(provenance)
     del run_fields["run_fingerprint"]
-    del run_fields["forecast_content_fingerprint"]
+    del run_fields["output_equivalence_fingerprint"]
     return SimulationResult(
         tuple(clubs),
         replace(provenance, run_fingerprint=_fingerprint("t09-run-v1", run_fields)),

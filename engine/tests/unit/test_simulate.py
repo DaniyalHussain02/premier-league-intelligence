@@ -1,5 +1,6 @@
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
+from functools import partial
 from itertools import permutations
 from math import fsum
 
@@ -321,8 +322,8 @@ def test_source_run_and_content_fingerprints_are_separate():
         assert result.provenance.input_fingerprint == previous.input_fingerprint
         assert result.provenance.run_fingerprint != previous.run_fingerprint
         assert (
-            result.provenance.forecast_content_fingerprint
-            == previous.forecast_content_fingerprint
+            result.provenance.output_equivalence_fingerprint
+            == previous.output_equivalence_fingerprint
         )
     revised = simulate_season(
         replace(snapshot, source_revision="synthetic-v2"), history, cutoff=CUTOFF
@@ -330,8 +331,8 @@ def test_source_run_and_content_fingerprints_are_separate():
     assert revised.provenance.input_fingerprint != previous.input_fingerprint
     assert revised.provenance.run_fingerprint != previous.run_fingerprint
     assert (
-        revised.provenance.forecast_content_fingerprint
-        == previous.forecast_content_fingerprint
+        revised.provenance.output_equivalence_fingerprint
+        == previous.output_equivalence_fingerprint
     )
     reordered = simulate_season(
         replace(snapshot, fixtures=snapshot.fixtures[::-1]),
@@ -423,3 +424,86 @@ def test_unfinished_fixture_rejects_finished_evidence_and_score_history():
     ) == SimulationBlocked(
         ("verified_score_conflicts_with_fixture_state",), reviewed.fixture.fixture_id
     )
+
+
+def test_fixture_revision_must_be_known_by_snapshot():
+    snapshot, history = season_input(unfinished=FixtureStatus.SCHEDULED)
+    fixture = snapshot.fixtures[0]
+    at_revision = replace(snapshot, known_at=fixture.known_at)
+    assert isinstance(
+        simulate_season(
+            at_revision, history, cutoff=CUTOFF, config=SimulationConfig(trials=1)
+        ),
+        SimulationResult,
+    )
+
+    earlier = replace(snapshot, known_at=fixture.known_at - timedelta(microseconds=1))
+    # Make only the pending fixture's revision later than the snapshot.
+    earlier = replace(
+        earlier,
+        fixtures=(
+            fixture,
+            *(
+                replace(record, known_at=earlier.known_at)
+                for record in snapshot.fixtures[1:]
+            ),
+        ),
+    )
+    assert simulate_season(earlier, history, cutoff=CUTOFF) == SimulationBlocked(
+        ("fixture_revision_after_snapshot",), fixture.fixture.fixture_id
+    )
+
+
+@pytest.mark.parametrize(
+    ("at_cutoff", "reason"),
+    [
+        (False, "result_not_known_at_fixture_review_time"),
+        (True, "missing_exact_verified_score"),
+    ],
+)
+def test_finished_result_respects_snapshot_and_strict_cutoff(at_cutoff, reason):
+    snapshot, history = season_input()
+    reviewed = snapshot.fixtures[0]
+    as_of = CUTOFF if at_cutoff else reviewed.known_at
+    available_at = CUTOFF if at_cutoff else as_of + timedelta(microseconds=1)
+    fact = replace(history[0].result, available_at=available_at)
+    revision = replace(reviewed, known_at=as_of, finished_result=fact)
+    snapshot = replace(
+        snapshot, known_at=as_of, fixtures=(revision, *snapshot.fixtures[1:])
+    )
+    history = (replace(history[0], result=fact), *history[1:])
+    assert simulate_season(snapshot, history, cutoff=CUTOFF) == SimulationBlocked(
+        (reason,), reviewed.fixture.fixture_id
+    )
+
+
+def test_canonical_fingerprint_golden_values(monkeypatch):
+    # The runtime is part of execution identity. Pin it for this test vector.
+    monkeypatch.setattr(
+        simulate,
+        "SimulationProvenance",
+        partial(simulate.SimulationProvenance, python="3.12.0"),
+    )
+    snapshot, history = season_input()
+    result = simulate_season(snapshot, history, cutoff=CUTOFF)
+    assert isinstance(result, SimulationResult)
+    assert (
+        result.provenance.input_fingerprint
+        == "b69b33a1b2d4d4f7ba2b25922e2ff43d7ea42e4f5124e9c6b27dc94b9878cd08"
+    )
+    assert (
+        result.provenance.run_fingerprint
+        == "8598eb34d9618032b99d017b012a0519939b30e06a1bd67ce6a3c5acd1bcac40"
+    )
+    assert (
+        result.provenance.output_equivalence_fingerprint
+        == "f4ef1b5ec9f79fe6d7082cf5bbdc1ff70ef04828d3dde57c229c07563f545199"
+    )
+
+    alternate_utc = timezone(timedelta(0), "Alternate UTC label")
+    alternate = simulate_season(
+        replace(snapshot, known_at=snapshot.known_at.astimezone(alternate_utc)),
+        history,
+        cutoff=CUTOFF.astimezone(alternate_utc),
+    )
+    assert alternate == result
