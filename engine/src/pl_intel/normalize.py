@@ -19,6 +19,8 @@ from pl_intel.schemas import (
 
 @dataclass(frozen=True, slots=True)
 class SourceFixture:
+    """Source record whose update time carries no result-availability guarantee."""
+
     provider_fixture_id: str | None
     home_ref: str
     away_ref: str

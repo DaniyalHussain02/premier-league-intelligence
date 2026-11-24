@@ -2,7 +2,8 @@
 
 import re
 from collections.abc import Iterable, Mapping
-from datetime import UTC, date, datetime, time
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -37,11 +38,8 @@ _MATCHDAY = re.compile(r"(?:▪\s*)?Matchday ([0-9]{1,2})")
 _DAY = re.compile(
     r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun) ([A-Z][a-z]{2}) ([0-9]{1,2})(?: ([0-9]{4}))?"
 )
-_ROW = re.compile(
-    r"(?:(\d{1,2}:\d{2})\s+)?(.+?)\s+v\s+(.+?)"
-    r"(?:\s{2,}([0-9]{1,3}-[0-9]{1,3}(?:\s+\([0-9]{1,3}-[0-9]{1,3}\))?|"
-    r"\[postponed\]|\[cancelled\]|-))?"
-)
+_ROW = re.compile(r"(?:(\d{1,2}:\d{2})\s+)?(.+?)\s+v\s+(.+)")
+_SCORE = re.compile(r"([0-9]{1,3})-([0-9]{1,3})(?:\s+\([0-9]{1,3}-[0-9]{1,3}\))?")
 _LONDON = ZoneInfo("Europe/London")
 
 
@@ -80,14 +78,68 @@ def _kickoff(
     return local.astimezone(UTC)
 
 
+def _parse_result(
+    away_field: str,
+    aliases: frozenset[str],
+) -> tuple[str, FixtureStatus, int | None, int | None]:
+    away, *suffixes = re.split(r"[ \t]{2,}|\t", away_field, maxsplit=1)
+    if away not in aliases:
+        raise ValueError("Unmapped club or unsupported OpenFootball result suffix")
+    suffix = suffixes[0] if suffixes else ""
+    if suffix in {"", "-"}:
+        return away, FixtureStatus.SCHEDULED, None, None
+    if suffix == "[postponed]":
+        return away, FixtureStatus.POSTPONED, None, None
+    if suffix == "[cancelled]":
+        return away, FixtureStatus.CANCELLED, None, None
+    if score := _SCORE.fullmatch(suffix):
+        return away, FixtureStatus.FINISHED, int(score[1]), int(score[2])
+    raise ValueError("Malformed or unsupported OpenFootball result suffix")
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedResultAvailability:
+    """Evidence for when this exact score was independently known."""
+
+    available_at: datetime
+    home_goals: int
+    away_goals: int
+    source_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalSeason:
+    """An archive snapshot and separately verified availability by fixture ID."""
+
+    archive_observed_at: datetime
+    archive_fixtures: tuple[Fixture, ...]
+    verified_results: tuple[tuple[Fixture, VerifiedResultAvailability], ...]
+
+    def results_known_before(self, cutoff: datetime) -> tuple[Fixture, ...]:
+        """Return only independently verified result versions strictly before cutoff."""
+        _require_utc(cutoff)
+        return tuple(
+            fixture
+            for fixture, evidence in self.verified_results
+            if evidence.available_at < cutoff
+        )
+
+
+def _require_utc(value: datetime) -> None:
+    if not isinstance(value, datetime) or value.utcoffset() != timedelta(0):
+        raise ValueError("Expected a timezone-aware UTC timestamp")
+
+
 def parse_openfootball(
     text: str,
     *,
     season: Season,
     observed_at: datetime,
+    reviewed_aliases: frozenset[str],
     reviewed_kickoffs: Mapping[tuple[date, str, str], datetime] | None = None,
 ) -> Iterable[SourceFixture]:
-    """Parse the EPL section. Observation time is archive provenance, not result availability."""
+    """Parse match rows against exact reviewed aliases."""
+    _require_utc(observed_at)
     matchweek = 0
     day = None
     header_seen = False
@@ -96,6 +148,7 @@ def parse_openfootball(
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        date_field = line[1:-1] if line.startswith("[") and line.endswith("]") else line
         try:
             if not header_seen:
                 if line != "= English Premier League":
@@ -104,22 +157,15 @@ def parse_openfootball(
             elif match := _MATCHDAY.fullmatch(line):
                 matchweek = int(match[1])
                 day = None
-            elif match := _DAY.fullmatch(line.strip("[]")):
+            elif match := _DAY.fullmatch(date_field):
                 day = _fixture_date(match, season)
             elif (match := _ROW.fullmatch(line)) and day is not None and matchweek:
-                clock, home, away, result = match.groups()
-                home, away = home.strip(), away.strip()
-                status = FixtureStatus.SCHEDULED
-                home_goals = away_goals = None
-                if result == "[postponed]":
-                    status = FixtureStatus.POSTPONED
-                elif result == "[cancelled]":
-                    status = FixtureStatus.CANCELLED
-                elif result not in (None, "-"):
-                    status = FixtureStatus.FINISHED
-                    home_goals, away_goals = map(int, result.split()[0].split("-"))
-                elif re.search(r"\s+(?:\d|\[|-)", away):
-                    raise ValueError("Unsupported OpenFootball result")
+                clock, home, away_field = match.groups()
+                if home not in reviewed_aliases:
+                    raise ValueError("Unmapped home club")
+                away, status, home_goals, away_goals = _parse_result(
+                    away_field, reviewed_aliases
+                )
                 yield SourceFixture(
                     None,
                     home,
@@ -148,22 +194,56 @@ def load_openfootball(
     observed_at: datetime,
     reviewed_kickoffs: Mapping[tuple[date, str, str], datetime] | None = None,
     rescheduling_approvals: Iterable[ReschedulingApproval] = (),
-) -> tuple[Fixture, ...]:
+    verified_availability: Mapping[str, VerifiedResultAvailability] | None = None,
+) -> HistoricalSeason:
     with path.open("rb") as stream:
         data = stream.read(_MAX_FILE_BYTES + 1)
     if len(data) > _MAX_FILE_BYTES:
         raise ValueError("OpenFootball file exceeds the size limit")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError("OpenFootball file must be UTF-8") from None
+    mappings = tuple(team_sources)
     rows = parse_openfootball(
-        data.decode("utf-8-sig"),
+        text,
         season=season,
         observed_at=observed_at,
+        reviewed_aliases=frozenset(
+            m.external_id for m in mappings if m.provider == PROVIDER
+        ),
         reviewed_kickoffs=reviewed_kickoffs,
     )
-    return normalize_season(
+    fixtures = normalize_season(
         PROVIDER,
         season,
         teams,
-        team_sources,
+        mappings,
         rows,
         rescheduling_approvals=rescheduling_approvals,
+    )
+    by_id = {fixture.fixture_id: fixture for fixture in fixtures}
+    verified = []
+    for fixture_id, evidence in (verified_availability or {}).items():
+        fixture = by_id.get(fixture_id)
+        _require_utc(evidence.available_at)
+        if (
+            fixture is None
+            or fixture.status is not FixtureStatus.FINISHED
+            or not fixture.kickoff_utc < evidence.available_at <= observed_at
+            or type(evidence.home_goals) is not int
+            or type(evidence.away_goals) is not int
+            or (fixture.home_goals, fixture.away_goals)
+            != (evidence.home_goals, evidence.away_goals)
+            or not isinstance(evidence.source_ref, str)
+            or not evidence.source_ref.strip()
+        ):
+            raise ValueError(
+                "Invalid verified result availability for OpenFootball fixture"
+            )
+        verified.append((fixture, evidence))
+    return HistoricalSeason(
+        observed_at,
+        fixtures,
+        tuple(sorted(verified, key=lambda item: item[0].fixture_id)),
     )
