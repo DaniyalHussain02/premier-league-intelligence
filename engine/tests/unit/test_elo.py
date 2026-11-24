@@ -5,6 +5,7 @@ import pytest
 
 from pl_intel.elo import EloConfig, EloMatch, rate_teams
 from pl_intel.normalize import canonical_fixture_id
+from pl_intel.schemas import Fixture, FixtureStatus
 from pl_intel.sources.openfootball import VerifiedHistoricalResult
 
 KNOWN = datetime(2040, 8, 6, 18, tzinfo=UTC)
@@ -18,17 +19,24 @@ def match(
     *,
     when: datetime = KNOWN,
     season: str = "2040-2041",
+    kickoff: datetime | None = None,
 ) -> EloMatch:
+    identity = canonical_fixture_id(season, home, away)
     return EloMatch(
-        VerifiedHistoricalResult(
-            canonical_fixture_id(season, home, away),
-            *score,
+        VerifiedHistoricalResult(identity, *score, when, "synthetic result evidence"),
+        Fixture(
+            identity,
+            season,
+            "synthetic",
+            identity,
+            home,
+            away,
+            kickoff if kickoff is not None else when - timedelta(hours=2),
+            1,
+            FixtureStatus.FINISHED,
             when,
-            "synthetic result evidence",
+            *score,
         ),
-        season,
-        home,
-        away,
         "synthetic identity evidence",
     )
 
@@ -83,7 +91,9 @@ def test_adding_future_scores_or_metadata_cannot_change_past_snapshot():
     future_correction = replace(
         prior, result=replace(prior.result, available_at=LATER, home_goals=0)
     )
-    malformed_future = replace(future, home_team_id="INVALID future identity")
+    malformed_future = replace(
+        future, fixture=replace(future.fixture, home_team_id="INVALID future identity")
+    )
     base = rate_teams((prior,), cutoff=LATER)
     assert (
         rate_teams((malformed_future, future_correction, future, prior), cutoff=LATER)
@@ -153,7 +163,13 @@ def test_cutoff_and_availability_require_aware_utc(value):
 )
 def test_rejects_invalid_canonical_identity_binding(change):
     with pytest.raises(ValueError):
-        rate_teams((replace(match(), **change),), cutoff=LATER)
+        record = match()
+        invalid = (
+            replace(record, **change)
+            if "identity_source_ref" in change
+            else replace(record, fixture=replace(record.fixture, **change))
+        )
+        rate_teams((invalid,), cutoff=LATER)
 
 
 @pytest.mark.parametrize(
@@ -182,7 +198,11 @@ def test_rejects_unverified_records_and_duplicate_eligible_score_versions():
         rate_teams((replace(record, result=None),), cutoff=LATER)
     with pytest.raises(ValueError, match="Duplicate eligible result"):
         rate_teams((record, record), cutoff=LATER)
-    correction = replace(record, result=replace(record.result, home_goals=0))
+    correction = replace(
+        record,
+        result=replace(record.result, home_goals=0),
+        fixture=replace(record.fixture, home_goals=0),
+    )
     with pytest.raises(ValueError, match="Duplicate eligible result"):
         rate_teams((record, correction), cutoff=LATER)
 
@@ -205,3 +225,93 @@ def test_rejects_unverified_records_and_duplicate_eligible_score_versions():
 def test_rejects_invalid_model_configuration(field, value):
     with pytest.raises(ValueError):
         EloConfig(**{field: value})
+
+
+@pytest.mark.parametrize("offset", [timedelta(seconds=1), timedelta(0)])
+def test_verified_availability_must_be_strictly_after_kickoff(offset):
+    fixture_time = KNOWN + offset
+    record = match(kickoff=fixture_time)
+    record = replace(record, fixture=replace(record.fixture, updated_at=LATER))
+    with pytest.raises(ValueError, match="strictly after kickoff"):
+        rate_teams((record,), cutoff=LATER)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [FixtureStatus.SCHEDULED, FixtureStatus.POSTPONED, FixtureStatus.CANCELLED],
+)
+def test_evidence_cannot_make_unfinished_fixture_eligible(status):
+    record = match()
+    fixture_record = replace(
+        record.fixture, status=status, home_goals=None, away_goals=None
+    )
+    with pytest.raises(ValueError, match="finished fixture"):
+        rate_teams((replace(record, fixture=fixture_record),), cutoff=LATER)
+
+
+def test_exact_score_version_must_match_reviewed_fixture():
+    record = match()
+    changed_score = replace(record, result=replace(record.result, home_goals=3))
+    with pytest.raises(ValueError, match="score does not match"):
+        rate_teams((changed_score,), cutoff=LATER)
+
+
+def test_earlier_kickoff_with_delayed_evidence_replays_when_known():
+    later_kickoff = match("club-a", "club-b", when=KNOWN)
+    earlier_kickoff = match(
+        "club-a",
+        "club-c",
+        (0, 1),
+        when=LATER,
+        kickoff=KNOWN - timedelta(days=1),
+    )
+    midway = rate_teams((earlier_kickoff, later_kickoff), cutoff=LATER)
+    assert midway == rate_teams((later_kickoff,), cutoff=LATER)
+    end = rate_teams(
+        (earlier_kickoff, later_kickoff), cutoff=LATER + timedelta(seconds=1)
+    )
+    home = midway.ratings["club-a"]
+    probability = 1 / (1 + 10 ** ((1500 - home - 60) / 400))
+    assert end.ratings["club-a"] == pytest.approx(home - 20 * probability)
+
+
+def test_update_timestamp_never_substitutes_for_verified_availability():
+    record = match()
+    later_observation = replace(
+        record, fixture=replace(record.fixture, updated_at=LATER + timedelta(days=1))
+    )
+    assert rate_teams((record,), cutoff=LATER) == rate_teams(
+        (later_observation,), cutoff=LATER
+    )
+
+
+def test_input_cap_counts_future_records_and_does_not_drain_iterable():
+    future = match(when=LATER)
+
+    def records(count):
+        for _ in range(count):
+            yield future
+        pytest.fail("Oversized iterator was drained")
+
+    assert (
+        rate_teams((future for _ in range(100_000)), cutoff=LATER).matches_applied == 0
+    )
+    with pytest.raises(ValueError, match="100,000 supplied records"):
+        rate_teams(records(100_001), cutoff=LATER)
+
+
+@pytest.mark.parametrize(
+    "field,low,high",
+    [
+        ("initial_rating", 1, 10_000),
+        ("home_advantage", 0, 400),
+        ("scale", 1, 2_000),
+        ("k_factor", 1, 100),
+    ],
+)
+def test_config_bounds_are_inclusive(field, low, high):
+    assert getattr(EloConfig(**{field: low}), field) == low
+    assert getattr(EloConfig(**{field: high}), field) == high
+    for invalid in (low - 0.5, high + 0.5):
+        with pytest.raises(ValueError):
+            EloConfig(**{field: invalid})

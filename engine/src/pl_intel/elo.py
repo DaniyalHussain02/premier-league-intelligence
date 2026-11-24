@@ -7,8 +7,11 @@ from math import isfinite
 from types import MappingProxyType
 
 from pl_intel.normalize import canonical_fixture_id
+from pl_intel.schemas import Fixture, FixtureStatus
 from pl_intel.sources.openfootball import VerifiedHistoricalResult
-from pl_intel.validate import require_canonical_id, require_text
+from pl_intel.validate import require_text, validate_fixture
+
+_MAX_RECORDS = 100_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,22 +24,16 @@ class EloConfig:
     k_factor: float = 20.0
 
     def __post_init__(self) -> None:
-        for value in (
-            self.initial_rating,
-            self.home_advantage,
-            self.scale,
-            self.k_factor,
+        for name, value, minimum, maximum in (
+            ("initial rating", self.initial_rating, 1, 10_000),
+            ("home advantage", self.home_advantage, 0, 400),
+            ("scale", self.scale, 1, 2_000),
+            ("K-factor", self.k_factor, 1, 100),
         ):
-            try:
-                valid = type(value) in {int, float} and isfinite(value)
-            except OverflowError:
-                valid = False
-            if not valid:
-                raise ValueError("Elo parameters must be finite real numbers")
-        if self.initial_rating <= 0 or self.scale <= 0 or self.k_factor <= 0:
-            raise ValueError("Initial rating, scale, and K-factor must be positive")
-        if self.home_advantage < 0:
-            raise ValueError("Home advantage must be nonnegative")
+            if type(value) not in {int, float} or not minimum <= value <= maximum:
+                raise ValueError(
+                    f"Elo {name} must be a finite number in [{minimum}, {maximum}]"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +41,7 @@ class EloMatch:
     """A verified result with an independently reviewed canonical identity binding."""
 
     result: VerifiedHistoricalResult
-    season_id: str
-    home_team_id: str
-    away_team_id: str
+    fixture: Fixture
     identity_source_ref: str
 
 
@@ -63,26 +58,31 @@ def _require_utc(value: datetime) -> None:
 
 
 def _validate_eligible_match(match: EloMatch) -> None:
-    for value in (
-        match.season_id,
-        match.home_team_id,
-        match.away_team_id,
-        match.result.fixture_id,
-    ):
-        require_canonical_id(value)
+    fixture, result = match.fixture, match.result
+    if not isinstance(fixture, Fixture):
+        raise TypeError("Elo requires a reviewed canonical fixture")
+    validate_fixture(fixture)
     require_text(match.identity_source_ref)
-    require_text(match.result.source_ref)
-    if match.home_team_id == match.away_team_id:
-        raise ValueError("Elo requires distinct home and away clubs")
-    if match.result.fixture_id != canonical_fixture_id(
-        match.season_id, match.home_team_id, match.away_team_id
+    require_text(result.source_ref)
+    if fixture.status is not FixtureStatus.FINISHED:
+        raise ValueError("Elo requires a finished fixture")
+    if (
+        result.fixture_id != fixture.fixture_id
+        or fixture.fixture_id
+        != canonical_fixture_id(
+            fixture.season_id, fixture.home_team_id, fixture.away_team_id
+        )
     ):
         raise ValueError(
             "Verified result does not match the canonical fixture identity"
         )
-    for goals in (match.result.home_goals, match.result.away_goals):
-        if type(goals) is not int or not 0 <= goals < 2**63:
-            raise ValueError("Elo requires two valid nonnegative integer scores")
+    if result.available_at <= fixture.kickoff_utc:
+        raise ValueError("Verified result availability must be strictly after kickoff")
+    goals = (result.home_goals, result.away_goals)
+    if any(type(score) is not int or not 0 <= score < 2**63 for score in goals):
+        raise ValueError("Elo requires two valid nonnegative integer scores")
+    if goals != (fixture.home_goals, fixture.away_goals):
+        raise ValueError("Verified score does not match the reviewed fixture")
 
 
 def _home_expectation(home: float, away: float, config: EloConfig) -> float:
@@ -99,7 +99,16 @@ def rate_teams(
 ) -> EloSnapshot:
     """Rate clubs using verified results strictly before cutoff.
 
-    The caller establishes score availability and historical fixture identity.
+    The caller independently verifies score availability and fixture identity
+    for the same score version. Kickoff and finished status validate the
+    binding. Archive observation time and updated_at cannot establish availability.
+    Replay follows (available_at, fixture_id), so delayed results enter when
+    known and cannot alter an earlier snapshot. Within the 100,000-record cap,
+    future records with valid UTC availability are skipped before inspecting
+    scores or fixture metadata to preserve cutoff invariance.
+
+    Record the model configuration, cutoff, input revision, and score and
+    identity evidence references when integrating this baseline.
     New clubs enter at the initial rating on their first eligible result.
     Ratings carry across seasons and absences. The replay uses no roster labels.
     """
@@ -109,7 +118,9 @@ def rate_teams(
 
     eligible = []
     seen_ids = set()
-    for match in matches:
+    for count, match in enumerate(matches, 1):
+        if count > _MAX_RECORDS:
+            raise ValueError("Elo input exceeds 100,000 supplied records")
         if not isinstance(match, EloMatch) or not isinstance(
             match.result, VerifiedHistoricalResult
         ):
@@ -128,8 +139,9 @@ def rate_teams(
 
     ratings: dict[str, float] = {}
     for match in eligible:
-        home = ratings.get(match.home_team_id, config.initial_rating)
-        away = ratings.get(match.away_team_id, config.initial_rating)
+        home_id, away_id = match.fixture.home_team_id, match.fixture.away_team_id
+        home = ratings.get(home_id, config.initial_rating)
+        away = ratings.get(away_id, config.initial_rating)
         home_goals, away_goals = match.result.home_goals, match.result.away_goals
         if home_goals > away_goals:
             score = 1.0
@@ -141,8 +153,8 @@ def rate_teams(
         next_home, next_away = home + delta, away - delta
         if not (isfinite(next_home) and isfinite(next_away)):
             raise ValueError("Elo update produced a non-finite rating")
-        ratings[match.home_team_id] = next_home
-        ratings[match.away_team_id] = next_away
+        ratings[home_id] = next_home
+        ratings[away_id] = next_away
 
     return EloSnapshot(
         cutoff, MappingProxyType(dict(sorted(ratings.items()))), len(eligible)
