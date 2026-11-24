@@ -1,14 +1,23 @@
+from copy import deepcopy
 from dataclasses import replace
 from fractions import Fraction
 from itertools import permutations
-from math import inf, nan, nextafter
+from math import inf, isfinite, nan, nextafter
 from random import Random
 
 import pytest
+from test_simulate import CUTOFF, season_input
 
 from pl_intel import assignment
 from pl_intel.assignment import assign_representative_table
-from pl_intel.simulate import ClubForecast, SimulationBlocked, SimulationResult
+from pl_intel.schemas import FixtureStatus
+from pl_intel.simulate import (
+    ClubForecast,
+    SimulationBlocked,
+    SimulationConfig,
+    SimulationResult,
+    simulate_season,
+)
 
 
 def _forecast(block=()):
@@ -209,3 +218,38 @@ def test_normalization_tolerance_boundaries(within):
 def test_rejects_blocked_simulation():
     with pytest.raises(TypeError, match="successful simulation"):
         assign_representative_table(SimulationBlocked(("unresolved_final_tie",)))
+
+
+def test_assigns_representative_table_from_successful_t09_simulation():
+    snapshot, history = season_input(unfinished=FixtureStatus.SCHEDULED)
+    forecast = simulate_season(
+        snapshot,
+        history,
+        cutoff=CUTOFF,
+        config=SimulationConfig(trials=7, batch_size=2, seed=12),
+    )
+    assert isinstance(forecast, SimulationResult)
+    before = deepcopy(forecast)
+
+    table = assign_representative_table(forecast)
+
+    assert [row.predicted_position for row in table.rows] == list(range(1, 21))
+    assert {row.team_id for row in table.rows} == {
+        team.team_id for team in snapshot.teams
+    }
+    assert isfinite(table.total_assigned_probability)
+    source = {club.team_id: club for club in before.clubs}
+    for row in table.rows:
+        club = source[row.team_id]
+        assert row.expected_earned_points == club.expected_earned_points
+        assert row.expected_adjusted_points == club.expected_adjusted_points
+        assert isfinite(row.assigned_probability)
+        assert row.assigned_probability == club.positions[row.predicted_position - 1]
+    assert forecast == before
+
+
+def test_exact_objective_with_subnormal_and_large_weights():
+    tiny = nextafter(0.0, 1.0)
+    up = nextafter(0.5, 1.0)
+    block = ((0.5, up, tiny), (0.5, 0.5, 0.0), (0.0, tiny, 1.0))
+    _assert_exact_optimum(block, assign_representative_table(_forecast(block)))
