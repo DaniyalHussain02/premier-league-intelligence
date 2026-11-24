@@ -87,14 +87,17 @@
     - Approved defaults are an initial rating of 1500, home advantage of 60, scale of 400, and K-factor of 20. Replay uses independently verified results with `available_at < cutoff`, ordered by `(available_at, fixture_id)`.
     - Historical source and fixture identity evidence still require independent verification. The Elo defaults remain provisional pending backtesting. T03 continues to block production publication.
 
-- [ ] **T08 — Poisson match probabilities**
+- [x] **T08 — Poisson match probabilities**
   - **Goal:** Convert pre-match team strengths into valid home/draw/away and scoreline probabilities.
   - **Files:** `engine/src/pl_intel/poisson.py`, `engine/tests/unit/test_poisson.py`.
   - **Acceptance:**
-    - [ ] Nonnegative, finite score probabilities; 1X2 probabilities each in [0,1] and sum to 1 within tolerance.
-    - [ ] Document home advantage, truncation/tail handling, and any fitted parameters.
-    - [ ] Same input and model version produce the same probabilities; no post-cutoff inputs.
+    - [x] Nonnegative, finite score probabilities; 1X2 probabilities each in [0,1] and sum to 1 within tolerance.
+    - [x] Document home advantage, truncation/tail handling, and any fitted parameters.
+    - [x] Same input and model version produce the same probabilities; no post-cutoff inputs.
   - **Test:** `python -m pytest engine/tests/unit/test_poisson.py -q`; test extreme strengths and normalization.
+  - **Completion:** Implementation merged in PR #11 at `6d04bb04bc52ca3a55718ec933515caa1f199a73`. Passed 36 focused T08 tests, 191 prior regression tests, and 227 total engine tests. Engine and frontend GitHub Actions, Ruff lint, Ruff format, and Git whitespace checks passed.
+    - `poisson-elo-v1` uses provisional defaults of 1.35 baseline goals and 0.5 strength sensitivity. It clamps the normalized Elo difference to `[-2, 2]` and modeled goal rates to `[0.05, 8]`. The scoreline cap is 64 goals per side, with a conservative omitted-tail tolerance of `1e-12`.
+    - Historical predictions enforce a strict result-availability cutoff. Independently reviewed fixture evidence remains an upstream responsibility. Integration follow-ups include validating fixture identity and kickoff, recording full model, configuration, and cutoff provenance, adding a goal-cap failure test, and precomputing fixture probabilities outside T09 simulation trials. T03 continues to block production publication.
 
 - [ ] **T09 — Seeded season Monte Carlo simulator**
   - **Goal:** Simulate remaining fixtures without altering actual completed results.
