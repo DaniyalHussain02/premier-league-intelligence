@@ -4,6 +4,7 @@ from itertools import permutations, repeat
 
 import pytest
 
+from pl_intel import ranking
 from pl_intel.normalize import canonical_fixture_id
 from pl_intel.ranking import (
     AdjustmentEvidence,
@@ -554,3 +555,89 @@ def test_verified_empty_qualification_differs_from_unknown():
     unknown = standings(games, qualification=None, **options)
     assert RankingBlocker.UNKNOWN_QUALIFICATION_BOUNDARIES not in empty.blockers
     assert RankingBlocker.UNKNOWN_QUALIFICATION_BOUNDARIES in unknown.blockers
+
+
+@pytest.mark.parametrize(
+    ("rules", "blocker"),
+    [
+        (None, RankingBlocker.UNVERIFIED_RULES),
+        (replace(SYNTHETIC, procedure="unsupported"), RankingBlocker.UNSUPPORTED_RULES),
+    ],
+)
+def test_unranked_clubs_with_separated_equal_totals_skip_sporting_grouping(
+    monkeypatch, rules, blocker
+):
+    a, b, c, d = ROSTER[:4]
+
+    def unexpected_grouping(*args, **kwargs):
+        pytest.fail("Unranked standings must not use sporting groups")
+
+    monkeypatch.setattr(ranking, "groupby", unexpected_grouping)
+    result = standings(
+        (fixture(b, d, (1, 0)),),
+        teams=(d, c, b, a),
+        rules=rules,
+        adjustments=AdjustmentEvidence(SEASON.season_id, AdjustmentStatus.UNKNOWN),
+    )
+    assert [(row.team_id, row.rank, row.earned_points) for row in result.rows] == [
+        (a.team_id, None, 0),
+        (b.team_id, None, 3),
+        (c.team_id, None, 0),
+        (d.team_id, None, 0),
+    ]
+    assert set(result.blockers) == {blocker, RankingBlocker.UNKNOWN_ADJUSTMENTS}
+
+
+def test_unresolved_previous_season_takes_precedence_over_valid_next_season():
+    previous = candidate()
+    late_day = NEXT.start_date
+    late = fixture(ROSTER[0], ROSTER[1], (1, 1), day=late_day)
+    amendment = ReschedulingApproval(
+        SEASON.season_id, late.fixture_id, late.kickoff_utc, "synthetic amendment"
+    )
+    previous = replace(
+        previous,
+        fixtures=(late, *previous.fixtures[1:]),
+        rescheduling_approvals=(amendment,),
+    )
+    result = resolve_active_season(
+        (candidate(NEXT), previous),
+        as_of=late_day,
+        last_valid_display_season_id=SEASON.season_id,
+    )
+    assert result.status is ResolutionStatus.PENDING
+    assert result.reason is ResolutionReason.UNCONFIRMED_COMPLETION
+    assert result.active_season_id is None
+    assert result.display_season_id == SEASON.season_id
+
+
+def test_verified_epl_blocks_multi_club_sporting_tie_even_with_distinct_mini_table_keys():
+    official = verified_ruleset("2026-2027", "pl-2026-2027-section-c")
+    assert official is not None
+    season = replace(
+        SEASON, season_id=official.season_id, ruleset_version=official.version
+    )
+    a, b, c, d, e = ROSTER[:5]
+    # A, B, and C each finish with 38 points, zero goal difference and three goals.
+    # Their mutual away goals would separate them if that procedure were verified.
+    draws = {(a, b): (1, 1), (a, c): (2, 2), (b, d): (2, 2), (c, e): (1, 1)}
+    games = tuple(
+        fixture(home, away, draws.get((home, away), (0, 0)), season=season)
+        for home, away in permutations(ROSTER, 2)
+    )
+    table = calculate_standings(
+        season,
+        ROSTER,
+        games,
+        phase=StandingsPhase.FINAL,
+        rules=official,
+        adjustments=replace(ZERO, season_id=season.season_id),
+        qualification=replace(QUALIFICATION, season_id=season.season_id),
+    )
+    assert [(row.team_id, row.rank) for row in table.rows[:3]] == [
+        (a.team_id, 1),
+        (b.team_id, 1),
+        (c.team_id, 1),
+    ]
+    assert RankingBlocker.UNRESOLVED_FINAL_TIE in table.blockers
+    assert RankingBlocker.INCOMPLETE_FINAL_INVENTORY not in table.blockers

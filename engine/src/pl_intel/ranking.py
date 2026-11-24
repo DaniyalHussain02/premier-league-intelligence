@@ -230,6 +230,7 @@ def _final_groups(
     nonrelegated: int,
     scores: dict[tuple[str, str], tuple[int, int]],
     complete: bool,
+    synthetic_rules: bool,
     blockers: set[RankingBlocker],
 ) -> Iterable[tuple[str, ...]]:
     needs_tiebreak = _crosses(start, len(clubs), boundaries)
@@ -238,6 +239,11 @@ def _final_groups(
     ):
         blockers.add(RankingBlocker.UNKNOWN_QUALIFICATION_BOUNDARIES)
     if not needs_tiebreak:
+        return (clubs,)
+    # The feasibility register does not verify the complete multi-club
+    # procedure. Only synthetic rules exercise that path.
+    if len(clubs) > 2 and not synthetic_rules:
+        blockers.add(RankingBlocker.UNRESOLVED_FINAL_TIE)
         return (clubs,)
     keys = _head_to_head(clubs, scores)
     if keys is None:
@@ -334,10 +340,31 @@ def calculate_standings(
         supported = False
         blockers.add(RankingBlocker.UNSUPPORTED_RULES)
 
-    # Unverified procedures expose totals in club ID order, with no official rank.
+    def standing(team_id: str, rank: int | None) -> Standing:
+        club = totals[team_id]
+        return Standing(
+            team_id,
+            rank,
+            club.wins + club.draws + club.losses,
+            club.wins,
+            club.draws,
+            club.losses,
+            club.goals_for,
+            club.goals_against,
+            club.points,
+            club.points + approved_points.get(team_id, 0)
+            if approved_points is not None
+            else None,
+        )
+
     ordered = sorted(team_ids)
-    if supported:
-        ordered.sort(key=key)
+    if not supported:
+        return StandingsResult(
+            phase,
+            tuple(standing(team_id, None) for team_id in ordered),
+            tuple(sorted(blockers)),
+        )
+    ordered.sort(key=key)
 
     rows = []
     rank = 1
@@ -346,7 +373,6 @@ def calculate_standings(
         groups: Iterable[tuple[str, ...]] = (clubs,)
         if (
             phase is StandingsPhase.FINAL
-            and supported
             and len(clubs) > 1
             and approved_points is not None
             and not exceptional_procedure
@@ -359,27 +385,11 @@ def calculate_standings(
                 nonrelegated=nonrelegated,
                 scores=scores,
                 complete=final_complete,
+                synthetic_rules=synthetic_rules,
                 blockers=blockers,
             )
         for group in groups:
-            for team_id in group:
-                club = totals[team_id]
-                rows.append(
-                    Standing(
-                        team_id,
-                        rank if supported else None,
-                        club.wins + club.draws + club.losses,
-                        club.wins,
-                        club.draws,
-                        club.losses,
-                        club.goals_for,
-                        club.goals_against,
-                        club.points,
-                        club.points + approved_points.get(team_id, 0)
-                        if approved_points is not None
-                        else None,
-                    )
-                )
+            rows.extend(standing(team_id, rank) for team_id in group)
             rank += len(group)
 
     return StandingsResult(phase, tuple(rows), tuple(sorted(blockers)))
