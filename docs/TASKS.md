@@ -133,6 +133,10 @@
     - [ ] Backtest output is explicitly retrospective, never presented as live published forecast history.
     - [ ] Limitations and calibration concerns are documented; no live-season final-rank accuracy before season end.
   - **Test:** `python -m pytest engine/tests/unit/test_backtest.py -q`; assert no leakage and matched observation IDs.
+  - **Implementation status:** Merged in [PR #18](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/18) at `56e17cb50bc095b37cc56cabb2a9ed3a08594ce2`. Verification reported 35 focused T11 tests and 319 full engine tests passing. Engine and frontend passed in [GitHub Actions run 45495588238](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45495588238).
+    - Leakage-free walk-forward evaluation uses independently verified result availability, the first eligible prediction timer, and conflict validation across the full revision timeline. It scores paired Elo/Poisson and empirical-baseline predictions with multiclass Brier scoring on a complete 380-fixture cohort, with a 3,800-record combined-history cap. Reports are explicitly retrospective. Historical evidence requires independent authentication.
+    - One synthetic run processed 380 predictions and 3,800 supplied result records in 7.77 seconds wall-clock time, with 31.92 MiB peak RSS and 380 Elo replay calls. It used Python 3.12.14 on Linux x86-64 with a two-CPU quota and an 8 GiB memory limit. This run predates the final revision-conflict correction and provides no real-world accuracy evidence.
+    - A verified completed-season historical evaluation remains outstanding. G5b and T03 production publication remain **BLOCKED**.
 
 ## Phase 3 — Publishing and user experience
 
