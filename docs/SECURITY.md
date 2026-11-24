@@ -83,7 +83,7 @@
 - [ ] **MUST** Use a **public** GitHub repository with standard GitHub-hosted runners only; never select paid larger runners, paid storage, or paid build minutes.
 - [ ] **MUST** Configure the forecast workflow with weekly `cron`, manual `workflow_dispatch`, `timeout-minutes` (e.g. 30), and serialized `concurrency` with `cancel-in-progress: false`.
 - [ ] **MUST** Stop after unchanged-data fingerprint checks; do not rerun 10,000 simulations or publish new snapshots when inputs/model configuration have not changed.
-- [ ] **MUST** Bound HTTP retries, API calls, data sizes, and simulation memory; use seeded, chunked NumPy simulations in CI rather than running full-season workloads on the 8 GB laptop.
+- [ ] **MUST** Bound HTTP retries, API calls, data sizes, and simulation memory. Run full-season T09 workloads on free standard cloud runners instead of the 8 GB laptop. Use the seeded standard-library sampler in bounded batches with online aggregation. Record runtime and configuration provenance, preserve batch-size reproducibility, and keep official ranking and consequential-tie blockers enforced.
 - [ ] **MUST** Do not enable billing, attach a payment card, accept paid overages, or automatically upgrade football-data.org, Cloudflare, or GitHub services. If a free quota is exhausted, let the update/build fail safely and retain the last valid site.
 - [ ] **MUST** Verify current no-card signup, quota, and permitted-use terms for the selected hosting provider and data sources before launch; the TRD's numerical limits are **not permanent guarantees**.
 - [ ] **MUST** Do not enable Cloudflare Workers, R2, D1, paid WAF, analytics add-ons, premium GitHub runners, or a hosted database for MVP.
