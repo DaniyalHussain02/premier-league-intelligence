@@ -108,20 +108,31 @@ class VerifiedResultAvailability:
 
 
 @dataclass(frozen=True, slots=True)
+class VerifiedHistoricalResult:
+    """A result fact with no metadata from the later archive snapshot."""
+
+    fixture_id: str
+    home_goals: int
+    away_goals: int
+    available_at: datetime
+    source_ref: str
+
+
+@dataclass(frozen=True, slots=True)
 class HistoricalSeason:
     """An archive snapshot and separately verified availability by fixture ID."""
 
     archive_observed_at: datetime
     archive_fixtures: tuple[Fixture, ...]
-    verified_results: tuple[tuple[Fixture, VerifiedResultAvailability], ...]
+    verified_results: tuple[VerifiedHistoricalResult, ...]
 
-    def results_known_before(self, cutoff: datetime) -> tuple[Fixture, ...]:
+    def results_known_before(
+        self, cutoff: datetime
+    ) -> tuple[VerifiedHistoricalResult, ...]:
         """Return only independently verified result versions strictly before cutoff."""
         _require_utc(cutoff)
         return tuple(
-            fixture
-            for fixture, evidence in self.verified_results
-            if evidence.available_at < cutoff
+            result for result in self.verified_results if result.available_at < cutoff
         )
 
 
@@ -241,9 +252,17 @@ def load_openfootball(
             raise ValueError(
                 "Invalid verified result availability for OpenFootball fixture"
             )
-        verified.append((fixture, evidence))
+        verified.append(
+            VerifiedHistoricalResult(
+                fixture_id,
+                evidence.home_goals,
+                evidence.away_goals,
+                evidence.available_at,
+                evidence.source_ref,
+            )
+        )
     return HistoricalSeason(
         observed_at,
         fixtures,
-        tuple(sorted(verified, key=lambda item: item[0].fixture_id)),
+        tuple(sorted(verified, key=lambda result: result.fixture_id)),
     )

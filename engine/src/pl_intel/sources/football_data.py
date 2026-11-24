@@ -1,4 +1,8 @@
-"""Fetch a single football-data.org EPL season and validate before returning it."""
+"""Fetch a single football-data.org EPL season and validate before returning it.
+
+Run one ingestion process per batch. The worker lock and rate limit are shared
+by clients in that process. Independent ingestion processes have separate budgets.
+"""
 
 import json
 import math
@@ -9,7 +13,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from http.client import HTTPException
-from threading import Lock
+from threading import Event, Lock, Thread
 from time import monotonic, sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -31,6 +35,9 @@ _REQUEST_BUDGET = 45
 _WORKER_LOCK = Lock()
 _NEXT_REQUEST = 0.0
 _MAX_BODY = 2 * 1024 * 1024
+_MAX_METADATA = 1024
+_MAX_RETRY_HEADER = 128
+_MAX_OUTPUT = _MAX_BODY + _MAX_METADATA + 1
 _MAX_ATTEMPTS = 3
 _MIN_INTERVAL = 7
 _MAX_RETRY_WAIT = 60
@@ -104,12 +111,56 @@ def _worker_main() -> None:
         )
     except SourceError:
         status, retry_after, body = -1, None, b""
+    if retry_after is not None and len(retry_after) > _MAX_RETRY_HEADER:
+        retry_after = None
     sys.stdout.buffer.write(json.dumps([status, retry_after]).encode("ascii") + b"\n")
     sys.stdout.buffer.write(body)
 
 
 def _worker_command(year: int) -> list[str]:
     return [sys.executable, "-m", "pl_intel.sources.football_data", str(year)]
+
+
+def _read_worker(worker: subprocess.Popen, token: str, deadline: float) -> bytes:
+    """Exchange bounded pipe data while the parent supervises the deadline."""
+    assert worker.stdin is not None and worker.stdout is not None
+    writer, reader = worker.stdin, worker.stdout
+    output = bytearray()
+    done = Event()
+    io_failed = False
+
+    def transfer() -> None:
+        nonlocal io_failed
+        try:
+            writer.write(token.encode("ascii"))
+            writer.close()
+            while len(output) <= _MAX_OUTPUT:
+                chunk = reader.read1(min(64 * 1024, _MAX_OUTPUT + 1 - len(output)))
+                if not chunk:
+                    break
+                output.extend(chunk)
+        except OSError:
+            io_failed = True
+        finally:
+            done.set()
+
+    io = Thread(target=transfer)
+    try:
+        io.start()
+        if not done.wait(max(0, deadline - monotonic())):
+            raise TimeoutError
+        if len(output) > _MAX_OUTPUT:
+            raise SourceError("football-data.org worker output exceeds the size limit")
+        if io_failed or worker.wait(timeout=max(0, deadline - monotonic())):
+            raise OSError
+    finally:
+        # Killing the sole child releases both pipe ends before the reader is joined.
+        if worker.poll() is None:
+            worker.kill()
+        worker.wait()
+        if io.ident is not None:
+            io.join()
+    return bytes(output)
 
 
 def _run_attempt(
@@ -125,30 +176,33 @@ def _run_attempt(
             stderr=subprocess.DEVNULL,
             env=environment,
         ) as worker:
-            try:
-                output, _ = worker.communicate(
-                    token.encode("ascii"), timeout=max(0, deadline - monotonic())
-                )
-            finally:
-                if worker.poll() is None:
-                    worker.kill()
-                worker.wait()
-            if worker.returncode:
-                return 0, None, b""
+            output = _read_worker(worker, token, deadline)
     except (subprocess.TimeoutExpired, OSError):
         return 0, None, b""
 
     metadata, separator, body = output.partition(b"\n")
     try:
-        status, retry_after = json.loads(metadata)
+        if not separator or len(metadata) > _MAX_METADATA or len(body) > _MAX_BODY:
+            raise ValueError
+        info = json.loads(metadata)
+        if not isinstance(info, list) or len(info) != 2:
+            raise ValueError
+        status, retry_after = info
         if (
-            not separator
-            or type(status) is not int
-            or (retry_after is not None and not isinstance(retry_after, str))
-            or len(body) > _MAX_BODY
+            type(status) is not int
+            or (status not in {-1, 0} and not 100 <= status <= 599)
+            or (
+                retry_after is not None
+                and (
+                    status < 300
+                    or not isinstance(retry_after, str)
+                    or len(retry_after) > _MAX_RETRY_HEADER
+                )
+            )
+            or (status != 200 and body)
         ):
             raise ValueError
-    except (ValueError, TypeError, RecursionError):
+    except (ValueError, RecursionError):
         raise SourceError("Invalid football-data.org worker response") from None
     return status, retry_after, body
 

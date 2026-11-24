@@ -425,7 +425,21 @@ def test_verified_availability_is_separate_and_version_specific(historical_path)
     assert history.results_known_before(when) == ()
     results = history.results_known_before(when + timedelta(seconds=1))
     assert len(results) == 1 and results[0].fixture_id == fixture_id
-    assert results[0].updated_at == OBSERVED_AT
+    assert results == (
+        openfootball.VerifiedHistoricalResult(
+            fixture_id, 2, 1, when, "synthetic evidence"
+        ),
+    )
+    for field in (
+        "kickoff_utc",
+        "updated_at",
+        "matchweek",
+        "status",
+        "provider",
+        "home_team_id",
+    ):
+        assert not hasattr(results[0], field)
+    assert history.archive_fixtures[0].updated_at == OBSERVED_AT
     with pytest.raises(ValueError, match="Invalid verified result availability"):
         load(
             openfootball.VerifiedResultAvailability(when, 0, 1, "another score version")
@@ -487,12 +501,19 @@ def test_worker_is_reaped_on_interruption(monkeypatch):
     )
     started = []
 
-    class InterruptedWorker(subprocess.Popen):
-        def communicate(self, *args, **kwargs):
-            started.append(self)
+    original_popen = subprocess.Popen
+
+    def capture(*args, **kwargs):
+        worker = original_popen(*args, **kwargs)
+        started.append(worker)
+        return worker
+
+    class InterruptedEvent(football_data.Event):
+        def wait(self, timeout=None):
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(football_data.subprocess, "Popen", InterruptedWorker)
+    monkeypatch.setattr(football_data.subprocess, "Popen", capture)
+    monkeypatch.setattr(football_data, "Event", InterruptedEvent)
     with pytest.raises(KeyboardInterrupt):
         football_data._run_attempt(
             2026, "synthetic-test-token", football_data.monotonic() + 1
@@ -531,3 +552,108 @@ def test_occupied_worker_slot_counts_against_request_budget(client, monkeypatch)
     ):
         fetch(api)
     assert opener.calls == []
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        b"synthetic-test-token",
+        b"synthetic-test-token\nprivate payload",
+        b'{"200": null, "other": null}\n{}',
+        b"[true, null]\n{}",
+        b"[700, null]\n",
+        b'[200, "unexpected"]\n{}',
+        b"[429, null]\nprivate payload",
+        b'[0, "unexpected"]\n',
+        b" " * 1025 + b"[200, null]\n{}",
+    ],
+)
+def test_malformed_worker_output_is_sanitized(monkeypatch, output):
+    script = f"import sys; sys.stdin.read(); sys.stdout.buffer.write({output!r})"
+    monkeypatch.setattr(
+        football_data, "_worker_command", lambda year: [sys.executable, "-c", script]
+    )
+    with pytest.raises(
+        football_data.SourceError, match="^Invalid football-data.org worker response$"
+    ):
+        football_data._run_attempt(
+            2026, "synthetic-test-token", football_data.monotonic() + 2
+        )
+
+
+def test_worker_output_cap_stops_running_writer(monkeypatch):
+    script = (
+        "import sys; sys.stdin.read();\n"
+        "while True: sys.stdout.buffer.write(b'x' * 8192); sys.stdout.flush()"
+    )
+    monkeypatch.setattr(
+        football_data, "_worker_command", lambda year: [sys.executable, "-c", script]
+    )
+    monkeypatch.setattr(football_data, "_MAX_OUTPUT", 2048)
+    started = []
+    original_popen = subprocess.Popen
+
+    def capture(*args, **kwargs):
+        worker = original_popen(*args, **kwargs)
+        started.append(worker)
+        return worker
+
+    monkeypatch.setattr(football_data.subprocess, "Popen", capture)
+    with pytest.raises(
+        football_data.SourceError, match="worker output exceeds the size limit"
+    ):
+        football_data._run_attempt(
+            2026, "synthetic-test-token", football_data.monotonic() + 4
+        )
+    assert len(started) == 1 and started[0].returncode is not None
+    assert started[0].stdin.closed and started[0].stdout.closed
+
+
+def test_worker_startup_failure_releases_slot_and_hides_details(monkeypatch):
+    monkeypatch.setenv("FOOTBALL_DATA_API_TOKEN", "synthetic-test-token")
+    monkeypatch.setattr(football_data, "_NEXT_REQUEST", 0.0)
+    monkeypatch.setattr(football_data, "_MIN_INTERVAL", 0)
+    monkeypatch.setattr(football_data, "sleep", lambda seconds: None)
+
+    def fail(*args, **kwargs):
+        raise OSError("synthetic-test-token private provider payload")
+
+    monkeypatch.setattr(football_data.subprocess, "Popen", fail)
+    assert football_data._run_attempt(
+        2026, "synthetic-test-token", football_data.monotonic() + 2
+    ) == (0, None, b"")
+    monkeypatch.setattr(football_data, "_MAX_ATTEMPTS", 1)
+    with pytest.raises(
+        football_data.SourceError,
+        match="^football-data.org request failed after bounded retries$",
+    ) as failure:
+        fetch(football_data.FootballDataClient())
+    assert failure.value.__context__ is None
+    assert not football_data._WORKER_LOCK.locked()
+
+
+def test_unexpected_worker_exception_does_not_show_stderr(monkeypatch, capfd):
+    script = "import sys; raise RuntimeError(sys.stdin.read() + ' private payload')"
+    monkeypatch.setattr(
+        football_data, "_worker_command", lambda year: [sys.executable, "-c", script]
+    )
+    assert football_data._run_attempt(
+        2026, "synthetic-test-token", football_data.monotonic() + 2
+    ) == (0, None, b"")
+    assert capfd.readouterr() == ("", "")
+
+
+def test_clients_share_worker_lock_and_request_pacing(client, monkeypatch):
+    api, clock = client
+    api._opener = MockOpener(payload(), payload())
+    original_attempt = football_data._run_attempt
+    starts = []
+
+    def observe(*args):
+        assert football_data._WORKER_LOCK.locked()
+        starts.append(clock[0])
+        return original_attempt(*args)
+
+    monkeypatch.setattr(football_data, "_run_attempt", observe)
+    assert len(fetch(api)) == len(fetch(football_data.FootballDataClient())) == 380
+    assert starts == [100, 107]
