@@ -76,27 +76,24 @@ def season_input(
             PAST,
             *((None, None) if scheduled else goals),
         )
+        result = None
+        identity = None
+        if not scheduled:
+            result = VerifiedHistoricalResult(
+                fixture.fixture_id, *goals, PAST + timedelta(hours=3), "synthetic-score"
+            )
+            identity = "synthetic-identity"
+            history.append(EloMatch(result, fixture, identity))
         fixtures.append(
             ReviewedFixture(
                 fixture,
-                PAST,
+                PAST + timedelta(hours=4),
                 "synthetic-fixture",
                 scheduled and unfinished is FixtureStatus.POSTPONED,
+                result,
+                identity,
             )
         )
-        if not scheduled:
-            history.append(
-                EloMatch(
-                    VerifiedHistoricalResult(
-                        fixture.fixture_id,
-                        *goals,
-                        PAST + timedelta(hours=3),
-                        "synthetic-score",
-                    ),
-                    fixture,
-                    "synthetic-identity",
-                )
-            )
     return SeasonSnapshot(
         season,
         teams,
@@ -305,3 +302,124 @@ def test_verified_head_to_head_away_goals_resolve_title():
     assert first.positions[1] == 1
     assert result.provenance.ruleset_version == snapshot.rules.version
     assert "synthetic-score" in result.provenance.evidence_refs
+
+
+def test_source_run_and_content_fingerprints_are_separate():
+    snapshot, history = season_input()
+    baseline = simulate_season(snapshot, history, cutoff=CUTOFF)
+    assert isinstance(baseline, SimulationResult)
+    previous = baseline.provenance
+    for kwargs in (
+        {"cutoff": CUTOFF + timedelta(hours=1)},
+        {"config": SimulationConfig(batch_size=32)},
+        {"config": SimulationConfig(seed=55)},
+        {"config": SimulationConfig(trials=99)},
+        {"elo_config": simulate.EloConfig(k_factor=25)},
+        {"poisson_config": simulate.PoissonConfig(baseline_goals=1.4)},
+    ):
+        result = simulate_season(snapshot, history, **({"cutoff": CUTOFF} | kwargs))
+        assert result.provenance.input_fingerprint == previous.input_fingerprint
+        assert result.provenance.run_fingerprint != previous.run_fingerprint
+        assert (
+            result.provenance.forecast_content_fingerprint
+            == previous.forecast_content_fingerprint
+        )
+    revised = simulate_season(
+        replace(snapshot, source_revision="synthetic-v2"), history, cutoff=CUTOFF
+    )
+    assert revised.provenance.input_fingerprint != previous.input_fingerprint
+    assert revised.provenance.run_fingerprint != previous.run_fingerprint
+    assert (
+        revised.provenance.forecast_content_fingerprint
+        == previous.forecast_content_fingerprint
+    )
+    reordered = simulate_season(
+        replace(snapshot, fixtures=snapshot.fixtures[::-1]),
+        reversed(history),
+        cutoff=CUTOFF,
+    )
+    assert reordered == baseline
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        "reference",
+        "identity",
+        "kickoff",
+        "provider_id",
+        "score",
+        "availability",
+        "late_review",
+    ],
+)
+def test_exact_reviewed_result_binding(mismatch):
+    snapshot, history = season_input()
+    match = history[0]
+    reviewed = snapshot.fixtures[0]
+    reason = "fixture_result_evidence_mismatch"
+    if mismatch == "reference":
+        reviewed = replace(
+            reviewed,
+            finished_result=replace(match.result, source_ref="swapped-score-ref"),
+        )
+    elif mismatch == "identity":
+        reviewed = replace(reviewed, result_identity_ref="swapped-identity-ref")
+    elif mismatch == "kickoff":
+        reviewed = replace(
+            reviewed,
+            fixture=replace(match.fixture, kickoff_utc=PAST - timedelta(hours=1)),
+        )
+    elif mismatch == "provider_id":
+        reviewed = replace(
+            reviewed, fixture=replace(match.fixture, provider_fixture_id="revised")
+        )
+    elif mismatch == "score":
+        reviewed = replace(
+            reviewed,
+            fixture=replace(match.fixture, home_goals=match.fixture.home_goals + 1),
+        )
+    elif mismatch == "availability":
+        reviewed = replace(
+            reviewed,
+            finished_result=replace(
+                match.result,
+                available_at=match.result.available_at + timedelta(minutes=1),
+            ),
+        )
+    else:
+        reviewed = replace(reviewed, known_at=PAST + timedelta(hours=1))
+        reason = "result_not_known_at_fixture_review_time"
+    result = simulate_season(
+        replace(snapshot, fixtures=(reviewed, *snapshot.fixtures[1:])),
+        history,
+        cutoff=CUTOFF,
+    )
+    assert result == SimulationBlocked((reason,), match.fixture.fixture_id)
+
+
+def test_unfinished_fixture_rejects_finished_evidence_and_score_history():
+    snapshot, history = season_input()
+    reviewed = snapshot.fixtures[0]
+    unfinished = replace(
+        reviewed,
+        fixture=replace(
+            reviewed.fixture,
+            status=FixtureStatus.SCHEDULED,
+            kickoff_utc=FUTURE,
+            home_goals=None,
+            away_goals=None,
+        ),
+    )
+    changed = replace(snapshot, fixtures=(unfinished, *snapshot.fixtures[1:]))
+    assert simulate_season(changed, history, cutoff=CUTOFF) == SimulationBlocked(
+        ("result_evidence_on_unfinished_fixture",), reviewed.fixture.fixture_id
+    )
+    cleared = replace(unfinished, finished_result=None, result_identity_ref=None)
+    assert simulate_season(
+        replace(changed, fixtures=(cleared, *changed.fixtures[1:])),
+        history,
+        cutoff=CUTOFF,
+    ) == SimulationBlocked(
+        ("verified_score_conflicts_with_fixture_state",), reviewed.fixture.fixture_id
+    )

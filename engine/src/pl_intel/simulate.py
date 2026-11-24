@@ -2,10 +2,11 @@
 
 from bisect import bisect_right
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from dataclasses import asdict, dataclass, is_dataclass, replace
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from itertools import islice
+from json import dumps
 from math import fsum, lcm
 from platform import python_version
 from random import Random
@@ -59,12 +60,19 @@ class SimulationConfig:
 
 @dataclass(frozen=True, slots=True)
 class ReviewedFixture:
-    """Exact canonical fixture state and kickoff independently reviewed upstream."""
+    """An upstream claim about the exact fixture state known at a given time.
+
+    Finished states carry the reviewed result fact and its identity binding.
+    References are independently authenticated upstream; this module only
+    checks that the supplied claims agree.
+    """
 
     fixture: Fixture
     known_at: datetime
     evidence_ref: str
     replacement_kickoff_confirmed: bool = False
+    finished_result: VerifiedHistoricalResult | None = None
+    result_identity_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,11 +99,15 @@ class SeasonSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class SimulationProvenance:
+    """Source and execution identities plus a publication-neutral content key."""
+
     season_id: str
     cutoff: datetime
     source_revision: str
     evidence_ref: str
     input_fingerprint: str
+    run_fingerprint: str
+    forecast_content_fingerprint: str
     simulation: SimulationConfig
     elo: EloConfig
     poisson: PoissonConfig
@@ -103,7 +115,7 @@ class SimulationProvenance:
     ruleset_version: str
     evidence_refs: tuple[str, ...]
     model_version: str = MODEL_VERSION
-    simulator_version: str = "season-monte-carlo-v1"
+    simulator_version: str = "season-monte-carlo-v2"
     rng: str = "random.Random/MT19937"
     cutoff_policy: str = (
         "verified available_at < cutoff; replay by availability and fixture ID"
@@ -161,17 +173,30 @@ def _bounded_history(
 def _fixture_blocker(
     reviewed: ReviewedFixture,
     cutoff: datetime,
-    scores: dict[str, Fixture],
+    scores: dict[str, EloMatch],
 ) -> str | None:
     fixture = reviewed.fixture
     _utc(reviewed.known_at)
     require_text(reviewed.evidence_ref)
+    # Provider timestamps can contradict a reviewed version. Only the
+    # independent result fact establishes when its score became available.
     if reviewed.known_at > cutoff or fixture.updated_at > reviewed.known_at:
         return "fixture_state_not_known_at_cutoff"
     if fixture.status is FixtureStatus.FINISHED:
-        if scores.get(fixture.fixture_id) != fixture:
+        match = scores.get(fixture.fixture_id)
+        if match is None:
             return "missing_exact_verified_score"
+        if (
+            match.fixture != fixture
+            or match.result != reviewed.finished_result
+            or match.identity_source_ref != reviewed.result_identity_ref
+        ):
+            return "fixture_result_evidence_mismatch"
+        if match.result.available_at > reviewed.known_at:
+            return "result_not_known_at_fixture_review_time"
         return None
+    if reviewed.finished_result is not None or reviewed.result_identity_ref is not None:
+        return "result_evidence_on_unfinished_fixture"
     if fixture.fixture_id in scores:
         return "verified_score_conflicts_with_fixture_state"
     if fixture.status is FixtureStatus.CANCELLED:
@@ -198,6 +223,29 @@ def _draw_table(grid: tuple[tuple[float, ...], ...]) -> tuple[list[float], int]:
         cumulative.append(min(total, 1.0))
     cumulative[-1] = 1.0
     return cumulative, width
+
+
+def _canonical_value(value: object) -> object:
+    if isinstance(value, datetime):
+        _utc(value)
+        return value.astimezone(UTC).isoformat(timespec="microseconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    raise TypeError("Unsupported forecast fingerprint value")
+
+
+def _fingerprint(schema: str, fields: object) -> str:
+    encoded = dumps(
+        {"schema": schema, "fields": fields},
+        default=_canonical_value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return sha256(encoded.encode("ascii")).hexdigest()
 
 
 def simulate_season(
@@ -251,7 +299,7 @@ def simulate_season(
     history = tuple(
         sorted(history, key=lambda m: (m.result.available_at, m.result.fixture_id))
     )
-    scores = {match.fixture.fixture_id: match.fixture for match in history}
+    scores = {match.fixture.fixture_id: match for match in history}
     for record in reviewed:
         reason = _fixture_blocker(record, cutoff, scores)
         if reason:
@@ -321,6 +369,8 @@ def simulate_season(
                 counts[row.rank] = counts.get(row.rank, 0) + 1
             for row in final.rows:
                 assert row.rank is not None and row.adjusted_points is not None
+                # Shared slots split statistical occupancy equally. This
+                # leaves official ranks and consequential outcomes with T06.
                 size = counts[row.rank]
                 units = weight * (_POSITION_UNITS // size)
                 for index in range(row.rank - 1, row.rank - 1 + size):
@@ -357,23 +407,36 @@ def simulate_season(
     ):
         raise ArithmeticError("Invalid accumulated position occupancy")
 
-    digest = sha256()
-    for record in (
-        snapshot.season,
-        teams,
-        reviewed,
-        snapshot.known_at,
-        snapshot.rules,
-        snapshot.adjustments.status,
-        snapshot.adjustments.evidence_ref,
-        tuple(sorted(snapshot.adjustments.adjustments, key=lambda a: a.team_id)),
-        snapshot.qualification,
-        snapshot.exceptional_procedure,
-        tuple(sorted(snapshot.rescheduling_approvals, key=lambda a: a.fixture_id)),
-        *history,
-    ):
-        digest.update(repr(record).encode())
-        digest.update(b"\n")
+    input_fingerprint = _fingerprint(
+        "t09-source-v1",
+        (
+            snapshot.season,
+            teams,
+            reviewed,
+            snapshot.known_at,
+            snapshot.source_revision,
+            snapshot.evidence_ref,
+            snapshot.rules,
+            snapshot.adjustments.status,
+            snapshot.adjustments.evidence_ref,
+            tuple(sorted(snapshot.adjustments.adjustments, key=lambda a: a.team_id)),
+            snapshot.qualification,
+            snapshot.exceptional_procedure,
+            tuple(sorted(snapshot.rescheduling_approvals, key=lambda a: a.fixture_id)),
+            history,
+        ),
+    )
+    # This is a content comparison key for a future publisher. T09 allocates
+    # no snapshot IDs and makes no publication or freshness decisions.
+    content_fingerprint = _fingerprint(
+        "t09-forecast-content-v1",
+        (
+            snapshot.season.season_id,
+            snapshot.rules.version,
+            MODEL_VERSION,
+            tuple(clubs),
+        ),
+    )
     refs = {
         snapshot.evidence_ref,
         snapshot.season.source_ref,
@@ -390,19 +453,25 @@ def simulate_season(
         refs.add(snapshot.adjustments.evidence_ref)
     if snapshot.qualification is not None:
         refs.add(snapshot.qualification.evidence_ref)
+    provenance = SimulationProvenance(
+        snapshot.season.season_id,
+        cutoff,
+        snapshot.source_revision,
+        snapshot.evidence_ref,
+        input_fingerprint,
+        "",
+        content_fingerprint,
+        config,
+        elo_config,
+        poisson_config,
+        tail_bound,
+        snapshot.rules.version,
+        tuple(sorted(refs)),
+    )
+    run_fields = asdict(provenance)
+    del run_fields["run_fingerprint"]
+    del run_fields["forecast_content_fingerprint"]
     return SimulationResult(
         tuple(clubs),
-        SimulationProvenance(
-            snapshot.season.season_id,
-            cutoff,
-            snapshot.source_revision,
-            snapshot.evidence_ref,
-            digest.hexdigest(),
-            config,
-            elo_config,
-            poisson_config,
-            tail_bound,
-            snapshot.rules.version,
-            tuple(sorted(refs)),
-        ),
+        replace(provenance, run_fingerprint=_fingerprint("t09-run-v1", run_fields)),
     )
