@@ -60,14 +60,18 @@
     - [x] Complete inventory and duplicate-ID checks are enforced before accepting season input.
   - **Test:** `python -m pytest engine/tests/unit/test_sources.py -q` with mocked API responses, 429/5xx, partial inventory, and alias errors.
 
-- [ ] **T06 — Active-season resolver and league ranking rules**
+- [x] **T06 — Active-season resolver and league ranking rules**
   - **Goal:** Choose the valid active season and implement verified season-specific standings/tiebreak behavior.
   - **Files:** `engine/src/pl_intel/{season,ranking}.py`, `engine/src/pl_intel/rules/`, `engine/tests/unit/test_season_ranking.py`.
   - **Acceptance:**
-    - [ ] Resolve season from provider calendar/metadata, not hardcoded year; off-season/incomplete next season returns explicit pending state.
-    - [ ] Standings count finished matches only and support uneven games played/postponements.
-    - [ ] Verified league tiebreaks are deterministic; unresolved exceptional tie procedures block publication rather than guessing.
+    - [x] Resolve season from provider calendar/metadata, not hardcoded year; off-season/incomplete next season returns explicit pending state.
+    - [x] Standings count finished matches only and support uneven games played/postponements.
+    - [x] Verified league tiebreaks are deterministic; unresolved exceptional tie procedures block publication rather than guessing.
   - **Test:** `python -m pytest engine/tests/unit/test_season_ranking.py -q`; cover season transition, postponement, equal-points ties, and incomplete rules.
+  - **Completion note**
+    - Implementation merged at `fe9f48a`. [PR #7](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/7)
+    - Verification passed for 37 focused T06 tests, 58 T05 regression tests, and 145 engine tests in total. Ruff lint, Ruff format, and Git whitespace checks passed.
+    - Live provider behavior remains unverified. Official adjustments, qualification boundaries, and exceptional decisions still require independently verified evidence. T03 continues to block production publication.
 
 - [ ] **T07 — Elo strength updates**
   - **Goal:** Build a deterministic, time-ordered team-strength baseline.
