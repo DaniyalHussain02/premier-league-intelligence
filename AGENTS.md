@@ -13,7 +13,7 @@ If docs conflict, flag the conflict and request a decision; do not silently over
 
 ## Stack and version policy
 - Frontend: React, TypeScript, Vite, CSS/CSS Modules; Recharts lazy-loaded for history charts.
-- Batch: **Python 3.12**, NumPy, SciPy, Python built-in `sqlite3`; pytest and Ruff.
+- Batch: **Python 3.12**, Python built-in `sqlite3`, pytest and Ruff. T09 uses the standard library for seeded, bounded-batch simulation on free standard cloud runners. NumPy and SciPy remain planned for later work where applicable, including SciPy assignment in T10, subject to separate dependency approval.
 - Frontend quality: Vitest, React Testing Library, ESLint, TypeScript compiler; Playwright smoke tests in CI only.
 - CI: GitHub Actions standard **`ubuntu-24.04`** runner; public GitHub repository.
 - Hosting: Cloudflare Pages free (subject to no-card validation); GitHub Pages fallback.
