@@ -99,15 +99,18 @@
     - `poisson-elo-v1` uses provisional defaults of 1.35 baseline goals and 0.5 strength sensitivity. It clamps the normalized Elo difference to `[-2, 2]` and modeled goal rates to `[0.05, 8]`. The scoreline cap is 64 goals per side, with a conservative omitted-tail tolerance of `1e-12`.
     - Historical predictions enforce a strict result-availability cutoff. Independently reviewed fixture evidence remains an upstream responsibility. Integration follow-ups include validating fixture identity and kickoff, recording full model, configuration, and cutoff provenance, adding a goal-cap failure test, and precomputing fixture probabilities outside T09 simulation trials. T03 continues to block production publication.
 
-- [ ] **T09 — Seeded season Monte Carlo simulator**
+- [x] **T09 — Seeded season Monte Carlo simulator**
   - **Goal:** Simulate remaining fixtures without altering actual completed results.
   - **Files:** `engine/src/pl_intel/simulate.py`, `engine/tests/unit/test_simulate.py`.
   - **Acceptance:**
-    - [ ] Default 10,000 seeded simulations in bounded batches; all 380 fixtures appear exactly once per season realization.
-    - [ ] Finished results are fixed; unfinished/postponed fixtures are simulated only once.
-    - [ ] Each simulation uses verified official ranking rules; title winner and bottom three counted correctly.
-    - [ ] Probabilities in [0,1], unrounded title total = 1, relegation total = 3; expected points >= actual points.
+    - [x] Default 10,000 seeded simulations in bounded batches; all 380 fixtures appear exactly once per season realization.
+    - [x] Finished results are fixed; unfinished/postponed fixtures are simulated only once.
+    - [x] Each simulation uses verified official ranking rules; title winner and bottom three counted correctly.
+    - [x] Probabilities in [0,1], unrounded title total = 1, relegation total = 3; expected points >= actual points.
   - **Test:** `python -m pytest engine/tests/unit/test_simulate.py -q`; completed season, partial season, postponements, reproducibility, and totals.
+  - **Completion:** Merged in [PR #14](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/14) at `db6f68ac7a8d091e566a93a022fd5edd9aafe1aa`. Verification reported 26 focused T09 and 253 full engine tests passing. Both engine and frontend jobs passed in [GitHub Actions run 45487882633](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45487882633).
+    - The seeded standard-library simulator defaults to 10,000 trials with bounded batches and online aggregation. It enforces verified fixture and result chronology and blocks the forecast on unresolved consequential ties.
+    - Repeated Elo replay optimization is deferred. The synthetic benchmark measured prediction preparation only. End-to-end production and backtesting performance remain unmeasured. T03 continues to **BLOCK** production publication.
 
 - [ ] **T10 — Representative predicted table assignment**
   - **Goal:** Produce a unique predicted rank 1–20 from the 20×20 finishing-position probability matrix.
