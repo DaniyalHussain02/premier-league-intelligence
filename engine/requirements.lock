@@ -43,3 +43,11 @@ ruff==0.17.6 \
 setuptools==84.2.1 \
     --hash=sha256:3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc \
     --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+numpy==2.4.4 \
+    --hash=sha256:81f4a14bee47aec54f883e0cad2d73986640c1590eb9bfaaba7ad17394481e6e \
+    --hash=sha256:b5f0362dc928a6ecd9db58868fca5e48485205e3855957bdedea308f8672ea4a
+    # via scipy
+scipy==1.17.1 \
+    --hash=sha256:02ae3b274fde71c5e92ac4d54bc06c42d80e399fec704383dcd99b301df37458 \
+    --hash=sha256:41b71f4a3a4cab9d366cd9065b288efc4d4f3c0b37a91a8e0947fb5bd7f31d87
+    # via pl-intel
