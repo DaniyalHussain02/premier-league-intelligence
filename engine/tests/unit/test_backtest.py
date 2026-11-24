@@ -221,10 +221,17 @@ def _revision(hours, status=_SCHEDULED, kickoff=_START):
         ((_revision(-3), _revision(0, FixtureStatus.POSTPONED, None)), -1),
         ((_revision(-0.5),), None),
         ((_revision(-3), _revision(-1, FixtureStatus.CANCELLED, None)), None),
-        ((_revision(-3), _revision(-3, kickoff=_START + timedelta(hours=4))), None),
+        (
+            (_revision(-3), _revision(-3, kickoff=_START + timedelta(hours=4))),
+            "conflict",
+        ),
     ],
 )
 def test_first_timer_uses_only_then_known_schedule(revisions, expected):
+    if expected == "conflict":
+        with pytest.raises(backtest._ConflictingFixtureRevisionsError):
+            backtest._select_timer(revisions[::-1], _STUDY)
+        return
     timer = backtest._select_timer(revisions[::-1], _STUDY)
     if expected is None:
         assert timer is None
@@ -438,3 +445,25 @@ def test_later_postponement_preserves_locked_prediction():
     assert isinstance(result, BacktestReport)
     assert result.sample_count == 380
     assert result.observations[:10] == original.observations[:10]
+
+
+@pytest.mark.parametrize("hours", [-2, -1, 0], ids=["before", "at", "after"])
+def test_revision_conflict_is_distinct_from_missing_timer(hours):
+    dataset = synthetic_study()
+    initial = _revision(-3)
+    conflicting = (
+        initial,
+        _revision(hours),
+        _revision(hours, kickoff=_START + timedelta(hours=4)),
+    )
+    expected = BacktestBlocked("conflicting_fixture_revisions", initial.fixture_id)
+    for revisions in (conflicting, conflicting[::-1]):
+        assert (
+            run_backtest(_first(dataset, revisions=revisions), config=_CONFIG)
+            == expected
+        )
+
+    missing = _first(dataset, revisions=(_revision(-0.5),))
+    assert run_backtest(missing, config=_CONFIG) == BacktestBlocked(
+        "unverified_prediction_timer", initial.fixture_id
+    )

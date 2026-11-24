@@ -182,6 +182,10 @@ def _review(evidence: ReviewedEvidence, study_cutoff: datetime) -> None:
         raise ValueError("Evidence review is later than the study cutoff")
 
 
+class _ConflictingFixtureRevisionsError(ValueError):
+    """Same-time revisions disagree on the fixture status or schedule."""
+
+
 def _select_timer(
     revisions: tuple[FixtureRevision, ...], study_cutoff: datetime
 ) -> _Timer | None:
@@ -209,15 +213,16 @@ def _select_timer(
 
     pending = None
     for known_at, claims in sorted(timeline.items()):
-        if pending is not None and pending.cutoff < known_at:
-            return pending
         claim = claims[0]
         if any(
             (item.status, item.scheduled_kickoff)
             != (claim.status, claim.scheduled_kickoff)
             for item in claims
         ):
-            return None
+            raise _ConflictingFixtureRevisionsError
+        # Later groups still need validation, but cannot change a fired timer.
+        if pending is not None and pending.cutoff < known_at:
+            continue
         kickoff = claim.scheduled_kickoff
         if claim.status is not FixtureStatus.SCHEDULED or kickoff is None:
             pending = None
@@ -414,7 +419,10 @@ def run_backtest(
             for revision in observation.revisions
         ):
             raise ValueError("Schedule revision belongs to a different fixture")
-        timer = _select_timer(observation.revisions, study_cutoff)
+        try:
+            timer = _select_timer(observation.revisions, study_cutoff)
+        except _ConflictingFixtureRevisionsError:
+            return BacktestBlocked("conflicting_fixture_revisions", fixture.fixture_id)
         if timer is None or timer.cutoff > observation.coverage_through:
             return BacktestBlocked("unverified_prediction_timer", fixture.fixture_id)
         if not config.training_start <= timer.cutoff < fixture.kickoff_utc:
