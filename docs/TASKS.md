@@ -50,14 +50,14 @@
     - [x] Reject duplicate/unmapped teams, invalid scores, impossible statuses, and inconsistent fixture records; no raw untrusted data in public JSON.
   - **Test:** `python -m pytest engine/tests/unit/test_schema.py -q`; include duplicate-key, malformed-score, and foreign-key cases.
 
-- [ ] **T05 — Historical and current-source adapters**
+- [x] **T05 — Historical and current-source adapters**
   - **Goal:** Parse approved OpenFootball files and fetch approved football-data.org fixtures/results into canonical records.
   - **Files:** `engine/src/pl_intel/sources/{openfootball,football_data}.py`, `engine/src/pl_intel/normalize.py`, `engine/tests/unit/test_sources.py`, `engine/tests/fixtures/`.
   - **Acceptance:**
-    - [ ] Source adapters use bounded HTTP timeouts, rate-aware retry/backoff, and explicit status/error handling.
-    - [ ] API key comes only from runtime environment/GitHub Secrets, never frontend or logs.
-    - [ ] Team alias mapping is explicit and fails closed on unknown clubs; frozen fixtures require no network or credentials.
-    - [ ] Complete inventory and duplicate-ID checks are enforced before accepting season input.
+    - [x] Source adapters use bounded HTTP timeouts, rate-aware retry/backoff, and explicit status/error handling.
+    - [x] API key comes only from runtime environment/GitHub Secrets, never frontend or logs.
+    - [x] Team alias mapping is explicit and fails closed on unknown clubs; frozen fixtures require no network or credentials.
+    - [x] Complete inventory and duplicate-ID checks are enforced before accepting season input.
   - **Test:** `python -m pytest engine/tests/unit/test_sources.py -q` with mocked API responses, 429/5xx, partial inventory, and alias errors.
 
 - [ ] **T06 — Active-season resolver and league ranking rules**
