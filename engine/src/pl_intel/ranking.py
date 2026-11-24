@@ -32,6 +32,12 @@ class PointsAdjustment:
 
 @dataclass(frozen=True, slots=True)
 class AdjustmentEvidence:
+    """Season adjustments independently verified by the caller.
+
+    Evidence references are provenance. This engine checks record consistency
+    without authenticating the cited decisions.
+    """
+
     season_id: str
     status: AdjustmentStatus
     evidence_ref: str | None = None
@@ -40,6 +46,8 @@ class AdjustmentEvidence:
 
 @dataclass(frozen=True, slots=True)
 class QualificationEvidence:
+    """Verified boundaries. An evidenced empty tuple confirms none apply."""
+
     season_id: str
     after_positions: tuple[int, ...]
     evidence_ref: str
@@ -82,9 +90,15 @@ class Standing:
 
 @dataclass(frozen=True, slots=True)
 class StandingsResult:
+    """Rows with blockers are provisional, even when some ranks are available."""
+
     phase: StandingsPhase
     rows: tuple[Standing, ...]
     blockers: tuple[RankingBlocker, ...]
+
+    @property
+    def provisional(self) -> bool:
+        return bool(self.blockers)
 
 
 @dataclass(slots=True)
@@ -232,6 +246,12 @@ def _final_groups(
     if not complete:
         return (clubs,)
 
+    # The documented procedure cannot settle a residual multi-club group.
+    # Preserve the original shared ranks if a sporting group only partly splits.
+    if len(clubs) > 2 and len(set(keys.values())) < len(clubs):
+        blockers.add(RankingBlocker.UNRESOLVED_FINAL_TIE)
+        return (clubs,)
+
     ordered = sorted(clubs, key=lambda club: (-keys[club][0], -keys[club][1], club))
     groups = []
     for _, tied in groupby(ordered, key=keys.__getitem__):
@@ -290,10 +310,11 @@ def calculate_standings(
             totals[fixture.home_team_id].record(home, away)
             totals[fixture.away_team_id].record(away, home)
 
+    synthetic_rules = rules_blocker is RankingBlocker.SYNTHETIC_RULES
     final_complete = False
     if phase is StandingsPhase.FINAL:
         try:
-            if rules_blocker is not RankingBlocker.SYNTHETIC_RULES:
+            if not synthetic_rules:
                 inventory_team_ids(roster)
             validate_fixture_pairings(team_ids, scores)
             final_complete = bool(team_ids)
@@ -308,11 +329,15 @@ def calculate_standings(
         return -points, club.goals_against - club.goals_for, -club.goals_for
 
     supported = rules_blocker in {None, RankingBlocker.SYNTHETIC_RULES}
-    ordered = sorted(team_ids, key=lambda club: (key(club), club))
     nonrelegated = len(roster) - rules.relegation_places if supported and rules else 0
     if supported and not 0 < nonrelegated <= len(roster):
         supported = False
         blockers.add(RankingBlocker.UNSUPPORTED_RULES)
+
+    # Unverified procedures expose totals in club ID order, with no official rank.
+    ordered = sorted(team_ids)
+    if supported:
+        ordered.sort(key=key)
 
     rows = []
     rank = 1

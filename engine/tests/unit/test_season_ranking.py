@@ -1,6 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
-from itertools import permutations
+from itertools import permutations, repeat
 
 import pytest
 
@@ -181,7 +181,7 @@ def test_approved_rescheduling_extends_season_and_requires_confirmed_completion(
     assert result.active_season_id == SEASON.season_id
     assert (
         resolve_active_season((extended,), as_of=date(2041, 6, 2)).reason
-        is ResolutionReason.UNCONFIRMED_COMPLETION
+        is ResolutionReason.OVERDUE_LATE_FIXTURE
     )
     bogus = replace(approval, source_ref=" ")
     assert (
@@ -424,3 +424,133 @@ def test_final_ordinary_tie_keeps_shared_positions():
     result = standings(games, phase=StandingsPhase.FINAL, rules=no_relegation_synthetic)
     assert [row.rank for row in result.rows] == [1, 2, 2]
     assert result.blockers == (RankingBlocker.SYNTHETIC_RULES,)
+
+
+def test_finished_late_fixture_same_day_waits_for_confirmation():
+    record = candidate()
+    late_day = date(2041, 6, 1)
+    late = fixture(ROSTER[0], ROSTER[1], (0, 0), day=late_day)
+    approval = ReschedulingApproval(
+        SEASON.season_id, late.fixture_id, late.kickoff_utc, "synthetic amendment"
+    )
+    completed_games = tuple(
+        replace(game, status=FixtureStatus.FINISHED, home_goals=0, away_goals=0)
+        for game in record.fixtures[1:]
+    )
+    extended = replace(
+        record, fixtures=(late, *completed_games), rescheduling_approvals=(approval,)
+    )
+    result = resolve_active_season(
+        (extended,), as_of=late_day, last_valid_display_season_id=SEASON.season_id
+    )
+    assert result.status is ResolutionStatus.PENDING
+    assert result.reason is ResolutionReason.UNCONFIRMED_COMPLETION
+    assert (
+        result.active_season_id is None and result.display_season_id == SEASON.season_id
+    )
+
+    confirmed = replace(extended, season=replace(SEASON, status=SeasonStatus.COMPLETE))
+    next_starting_today = candidate(replace(NEXT, start_date=late_day))
+    result = resolve_active_season((confirmed, next_starting_today), as_of=late_day)
+    assert result.active_season_id == NEXT.season_id
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_overdue_fixture_conflicts_with_provider_completion(approved):
+    record = candidate(replace(SEASON, status=SeasonStatus.COMPLETE))
+    late = fixture(ROSTER[0], ROSTER[1], day=date(2041, 6, 1))
+    approval = ReschedulingApproval(
+        SEASON.season_id, late.fixture_id, late.kickoff_utc, "synthetic amendment"
+    )
+    extended = replace(
+        record,
+        fixtures=(late, *record.fixtures[1:]),
+        rescheduling_approvals=(approval,) if approved else (),
+    )
+    result = resolve_active_season((extended,), as_of=date(2041, 6, 2))
+    assert result.status is ResolutionStatus.BLOCKED
+    assert result.reason is ResolutionReason.INVALID_INVENTORY
+
+
+def test_calendar_input_is_bounded_and_caller_date_is_validated():
+    record = candidate()
+    assert (
+        resolve_active_season(repeat(record), as_of=SEASON.start_date).reason
+        is ResolutionReason.INVALID_METADATA
+    )
+    oversized = replace(record, provider_season_id="x" * 513)
+    assert (
+        resolve_active_season((oversized,), as_of=SEASON.start_date).reason
+        is ResolutionReason.INVALID_METADATA
+    )
+    with pytest.raises(ValueError, match="calendar date"):
+        resolve_active_season((record,), as_of="2040-08-01")
+
+
+@pytest.mark.parametrize("rules", [None, replace(SYNTHETIC, procedure="unsupported")])
+def test_provisional_totals_do_not_imply_authoritative_rank(rules):
+    a, b, c = ROSTER[:3]
+    result = standings((fixture(c, a, (4, 0)),), teams=(c, b, a), rules=rules)
+    assert result.provisional
+    assert [row.team_id for row in result.rows] == [a.team_id, b.team_id, c.team_id]
+    assert [row.rank for row in result.rows] == [None, None, None]
+    assert [row.earned_points for row in result.rows] == [0, 0, 3]
+
+
+def test_partial_three_club_split_leaves_original_shared_ranks():
+    a, b, c, d = ROSTER[:4]
+    results = {(a, b): (1, 1), (c, d): (2, 1)}
+    games = tuple(
+        fixture(
+            home,
+            away,
+            results.get((home, away), (1, 0) if d in (home, away) else (0, 0)),
+        )
+        for home, away in permutations((a, b, c, d), 2)
+    )
+    table = standings(games, teams=(a, b, c, d), phase=StandingsPhase.FINAL)
+    assert [row.team_id for row in table.rows] == [
+        d.team_id,
+        a.team_id,
+        b.team_id,
+        c.team_id,
+    ]
+    assert [row.rank for row in table.rows] == [1, 2, 2, 2]
+    assert RankingBlocker.UNRESOLVED_FINAL_TIE in table.blockers
+
+
+def test_verified_epl_final_requires_full_size_even_with_complete_miniature_round_robin():
+    official = verified_ruleset("2026-2027", "pl-2026-2027-section-c")
+    assert official is not None
+    season = replace(
+        SEASON, season_id=official.season_id, ruleset_version=official.version
+    )
+    teams = ROSTER[:5]
+    games = tuple(
+        fixture(home, away, (1, 0), season=season)
+        for home, away in permutations(teams, 2)
+    )
+    result = calculate_standings(
+        season,
+        teams,
+        games,
+        phase=StandingsPhase.FINAL,
+        rules=official,
+        adjustments=replace(ZERO, season_id=season.season_id),
+        qualification=replace(QUALIFICATION, season_id=season.season_id),
+    )
+    assert result.provisional
+    assert RankingBlocker.INCOMPLETE_FINAL_INVENTORY in result.blockers
+    assert RankingBlocker.SYNTHETIC_RULES not in result.blockers
+
+
+def test_verified_empty_qualification_differs_from_unknown():
+    games = all_games(((0, 0),) * 6)
+    options = {
+        "phase": StandingsPhase.FINAL,
+        "rules": replace(SYNTHETIC, relegation_places=0),
+    }
+    empty = standings(games, **options)
+    unknown = standings(games, qualification=None, **options)
+    assert RankingBlocker.UNKNOWN_QUALIFICATION_BOUNDARIES not in empty.blockers
+    assert RankingBlocker.UNKNOWN_QUALIFICATION_BOUNDARIES in unknown.blockers

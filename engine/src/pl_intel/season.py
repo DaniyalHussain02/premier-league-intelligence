@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
-from itertools import pairwise
+from itertools import islice, pairwise
 
 from pl_intel.db import store_season, temporary_database
 from pl_intel.normalize import (
@@ -28,6 +28,9 @@ from pl_intel.validate import (
     validate_season,
 )
 
+_MAX_CALENDAR_ENTRIES = 64
+_MAX_METADATA_TEXT = 512
+
 
 class ResolutionStatus(StrEnum):
     ACTIVE = "active"
@@ -40,6 +43,7 @@ class ResolutionReason(StrEnum):
     INCOMPLETE_INVENTORY = "incomplete_inventory"
     UNCONFIRMED_SEASON = "unconfirmed_season"
     UNCONFIRMED_COMPLETION = "unconfirmed_completion"
+    OVERDUE_LATE_FIXTURE = "overdue_late_fixture"
     INVALID_METADATA = "invalid_metadata"
     OVERLAPPING_CALENDARS = "overlapping_calendars"
     INVALID_INVENTORY = "invalid_inventory"
@@ -87,7 +91,11 @@ def resolve_active_season(
     as_of: date,
     last_valid_display_season_id: str | None = None,
 ) -> SeasonResolution:
-    """Use a UTC calendar date and preserve the caller's last valid display ID."""
+    """Resolve a supplied snapshot using a UTC calendar date.
+
+    Malformed provider records return blockers. Invalid as-of dates and
+    fallback IDs are caller errors and raise ValueError.
+    """
     require_date(as_of)
     if last_valid_display_season_id is not None:
         require_canonical_id(last_valid_display_season_id)
@@ -102,12 +110,22 @@ def resolve_active_season(
             None, last_valid_display_season_id, ResolutionStatus.BLOCKED, reason
         )
 
-    calendar = tuple(candidates)
+    calendar = tuple(islice(candidates, _MAX_CALENDAR_ENTRIES + 1))
+    if len(calendar) > _MAX_CALENDAR_ENTRIES:
+        return blocked(ResolutionReason.INVALID_METADATA)
     season_ids = set()
     provider_ids = set()
     try:
         for candidate in calendar:
             season = candidate.season
+            for field in (
+                candidate.provider_season_id,
+                season.season_id,
+                season.ruleset_version,
+                season.source_ref,
+            ):
+                if not isinstance(field, str) or len(field) > _MAX_METADATA_TEXT:
+                    return blocked(ResolutionReason.INVALID_METADATA)
             validate_season(season)
             require_text(candidate.provider_season_id)
             if (
@@ -135,11 +153,22 @@ def resolve_active_season(
         if as_of < season.start_date:
             continue
         in_window = as_of <= season.end_date
-        if not in_window and season.status is not SeasonStatus.ACTIVE:
-            continue
-        if not in_window and not candidate.rescheduling_approvals:
+        if not in_window and season.status is SeasonStatus.PENDING:
             continue
         try:
+            if (
+                len(candidate.teams) > 20
+                or len(candidate.fixtures) > 380
+                or len(candidate.rescheduling_approvals) > 380
+            ):
+                return blocked(ResolutionReason.INVALID_INVENTORY)
+            late_fixtures = [
+                f for f in candidate.fixtures if f.kickoff_utc.date() > season.end_date
+            ]
+            if not in_window and not (
+                late_fixtures or candidate.rescheduling_approvals
+            ):
+                continue
             _validate_inventory(candidate)
         except IncompleteInventory:
             return pending(ResolutionReason.INCOMPLETE_INVENTORY)
@@ -153,13 +182,14 @@ def resolve_active_season(
                 return blocked(ResolutionReason.INVALID_INVENTORY)
             continue
 
-        late_fixtures = [
-            f for f in candidate.fixtures if f.kickoff_utc.date() > season.end_date
-        ]
-        if in_window or any(
-            f.kickoff_utc.date() >= as_of and f.status is not FixtureStatus.CANCELLED
+        outstanding = [
+            f
             for f in late_fixtures
-        ):
+            if f.status in {FixtureStatus.SCHEDULED, FixtureStatus.POSTPONED}
+        ]
+        if any(f.kickoff_utc.date() < as_of for f in outstanding):
+            return pending(ResolutionReason.OVERDUE_LATE_FIXTURE)
+        if in_window or outstanding:
             active.append(season.season_id)
         elif late_fixtures:
             awaiting_completion = True
