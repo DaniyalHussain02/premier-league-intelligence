@@ -1,0 +1,8 @@
+# Synthetic example. No provider data.
+= English Premier League
+
+▪ Matchday 1
+Fri Aug 21
+  20:00  Synthetic Home  v Synthetic Away        2-1 (1-0)
+Sat Aug 22
+  15:00  Synthetic Away  v Synthetic Home        [postponed]
