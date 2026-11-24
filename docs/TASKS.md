@@ -112,14 +112,17 @@
     - The seeded standard-library simulator defaults to 10,000 trials with bounded batches and online aggregation. It enforces verified fixture and result chronology and blocks the forecast on unresolved consequential ties.
     - Repeated Elo replay optimization is deferred. The synthetic benchmark measured prediction preparation only. End-to-end production and backtesting performance remain unmeasured. T03 continues to **BLOCK** production publication.
 
-- [ ] **T10 — Representative predicted table assignment**
+- [x] **T10 — Representative predicted table assignment**
   - **Goal:** Produce a unique predicted rank 1–20 from the 20×20 finishing-position probability matrix.
   - **Files:** `engine/src/pl_intel/assignment.py`, `engine/tests/unit/test_assignment.py`.
   - **Acceptance:**
-    - [ ] SciPy maximum-weight assignment maximizes summed position probabilities, not expected points.
-    - [ ] Exactly one club per rank; deterministic stable-team-ID tie resolution, including equal-optimum cases.
-    - [ ] Projected points remain separate from representative predicted position; explanation is available for UI.
+    - [x] SciPy maximum-weight assignment maximizes summed position probabilities, not expected points.
+    - [x] Exactly one club per rank; deterministic stable-team-ID tie resolution, including equal-optimum cases.
+    - [x] Projected points remain separate from representative predicted position; explanation is available for UI.
   - **Test:** `python -m pytest engine/tests/unit/test_assignment.py -q`; competing modal ranks, exact ties, and permutation stability.
+  - **Completion:** Merged in [PR #16](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/16) at `2759c4faeed2946eea032fbe910bf884b01ce6f6`. Verification reported 31 focused T10 tests and 284 full engine tests passing. Both engine and frontend jobs passed in [GitHub Actions run 45491389861](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45491389861).
+    - SciPy maximizes the sum of assigned finishing-position probabilities. Exact-integer certification and a bounded fallback preserve the optimum, with deterministic stable-team-ID ordering among exact ties. The result carries separate expected-points fields and a frontend explanation.
+    - SciPy 1.17.1 and transitive NumPy 2.4.4 are hash-pinned. Exact-version advisory checks are point-in-time, and ongoing dependency and native-library audit coverage remains open. Windows verification covered wheel selection and hashes. Native Windows execution remains unverified. T03 production publication remains **BLOCKED**.
 
 - [ ] **T11 — Leakage-free chronological backtesting**
   - **Goal:** Evaluate match-outcome probabilities on at least one verified completed season against a simple baseline.
