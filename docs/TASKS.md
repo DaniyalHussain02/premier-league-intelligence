@@ -152,18 +152,20 @@
   - **Implementation status:** Merged in [PR #20](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/20) at `16b865154077038664b46907b571261e5ada93ab`.
     - 72 focused Python tests, 391 full engine tests, 20 focused frontend contract tests, and 21 full frontend tests passed. TypeScript, Ruff lint and format, frontend lint and build, and Git whitespace checks passed. GitHub Actions passed on [branch run 45503856900](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45503856900) and [PR run 45504400521](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45504400521).
     - Implemented versioned static JSON contracts, allowlisted serialization, canonical standings reconciliation, T09 probability verification, T10 representative assignment, snapshot retry, and same-season fallback. Historical export requires T11 evidence verification and separate trusted redistribution review.
-    - Exact simulation-input provenance binding remains unresolved. Standings and forecast reconciliation do not independently establish that the supplied fixture inventory and eligible historical results exactly match the original simulation inputs. G5b and T03 production publication remain **BLOCKED**.
+    - T12 standings and forecast reconciliation alone cannot establish exact simulation-input provenance. T13 verifies that binding at the staging boundary. G5b and T03 production publication remain **BLOCKED**.
 
-- [ ] **T13 — Idempotent and failure-safe snapshot publishing**
+- [x] **T13 — Idempotent and failure-safe snapshot publishing**
   - **Goal:** Make changed-data updates append-only and leave the previous valid forecast untouched on errors.
   - **Files:** `engine/src/pl_intel/{publish,cli}.py`, `engine/tests/integration/test_publish.py`, `frontend/public/data/` (approved sample artifacts only).
-  - **Acceptance:**
-    - [ ] Canonical input-result hash prevents duplicate snapshots on unchanged source data.
-    - [ ] Changed valid input creates immutable season-namespaced snapshot and updates indexes/manifests only after all validations pass.
-    - [ ] Any fetch, validation, simulation, or write failure preserves the prior latest pointer, bytes, and original timestamps.
-    - [ ] Published artifacts contain no raw licensed inputs or secrets; publishing is blocked by unresolved feasibility gates.
+  - **Acceptance (offline staging):**
+    - [x] Canonical input-result hash prevents duplicate snapshots on unchanged source data.
+    - [x] Changed valid input creates immutable season-namespaced snapshot and updates indexes/manifests only after all validations pass.
+    - [x] Any fetch, validation, simulation, or write failure preserves the prior latest pointer, bytes, and original timestamps.
+    - [x] Published artifacts contain no raw licensed inputs or secrets; publishing is blocked by unresolved feasibility gates.
   - **Test:** `python -m pytest engine/tests/integration/test_publish.py -q`; inject failures and compare prior artifact hashes.
-  - **Outstanding production prerequisite:** Establish exact simulation-input provenance binding for the canonical fixture inventory and eligible historical results before production publication.
+  - **Implementation status:** Merged in [PR #22](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/22) at `98c2fa8ecd124f7766dc8935401a206ce8185194`. All 26 focused T09 tests, 36 T13 integration tests, and 427 full engine tests passed. Engine and frontend passed in [PR CI run 45715454010](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45715454010).
+    - Staging verifies exact simulation-input provenance for the reviewed fixture inventory and cutoff-eligible historical results. Tests verify unchanged inputs skip simulation, validated changes stage immutable snapshots, and failures preserve prior bytes and timestamps.
+    - G5b and T03 production publication remain **BLOCKED**. Production integration is tracked under T16.
 
 - [ ] **T14 — Responsive current forecast dashboard**
   - **Goal:** Display current and representative predicted standings, title/relegation probabilities, and freshness metadata.
@@ -195,6 +197,7 @@
     - [ ] No-change run makes no commit; successful changed-data run commits only validated permitted artifacts; failure keeps prior public forecast.
     - [ ] Document manual rerun, stale-data diagnosis, API quota handling, and how to disable schedule.
   - **Test:** Workflow syntax check; run `workflow_dispatch` on approved safe fixture/data and inspect job permissions, logs, diff, and no-change/failure behavior.
+  - **Outstanding publication integration:** Verify the original manifest and snapshot bytes against trusted Git archive history. Verify that the protected checkout matches the expected prior revision. Enforce production feasibility gates at the write boundary and apply the entire staged patch in one atomic Git update conditional on that revision. Test concurrent updates and commit failures end to end, including preservation of the prior forecast and timestamps.
 
 - [ ] **T17 — Security, cost, and release review**
   - **Goal:** Complete `docs/SECURITY.md` MUST checks and verify all PRD release gates before deployment.
