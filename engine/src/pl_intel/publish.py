@@ -1,11 +1,15 @@
-"""Validate and encode static v1 documents without writing or publishing files."""
+"""Validate static v1 documents and stage complete snapshot updates."""
 
 import json
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from math import fsum
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 from pl_intel.assignment import assign_representative_table
@@ -17,11 +21,13 @@ from pl_intel.backtest import (
     StudyKind,
     run_backtest,
 )
+from pl_intel.elo import EloMatch
 from pl_intel.normalize import (
     canonical_fixture_id,
     inventory_team_ids,
     validate_fixture_pairings,
 )
+from pl_intel.poisson import MODEL_VERSION
 from pl_intel.ranking import calculate_standings
 from pl_intel.schemas import (
     BacktestEntry,
@@ -34,8 +40,22 @@ from pl_intel.schemas import (
     HistoryIndex,
     LatestManifest,
     SeasonIndex,
+    SeasonStatus,
 )
-from pl_intel.simulate import SeasonSnapshot, SimulationResult
+from pl_intel.season import ResolutionStatus, SeasonResolution
+from pl_intel.simulate import (
+    _CUTOFF_POLICY,
+    _PYTHON,
+    _RNG,
+    _SIMULATOR_VERSION,
+    SeasonSnapshot,
+    SimulationBlocked,
+    SimulationResult,
+    _fingerprint,
+    _prepare_simulation,
+    _PreparedSimulation,
+    _source_fingerprint,
+)
 from pl_intel.validate import require_canonical_id
 
 DATA_INDEX_PATH = "/data/index.json"
@@ -490,3 +510,472 @@ def serialize_backtest_summary(
         "limitations": list(_PUBLIC_LIMITATIONS),
     }
     return _encode(document)
+
+
+def _publication_hash(prepared: _PreparedSimulation) -> str:
+    """Hash semantic inputs, excluding poll timestamps and batch size."""
+    season, history = prepared.snapshot, prepared.history
+    return _fingerprint(
+        "t13-publication-v1",
+        {
+            "season": replace(season.season, source_ref=""),
+            "teams": sorted(season.teams, key=lambda team: team.team_id),
+            "fixtures": [
+                replace(item.fixture, updated_at=item.fixture.kickoff_utc)
+                for item in sorted(season.fixtures, key=lambda f: f.fixture.fixture_id)
+            ],
+            "history": [
+                (
+                    match.fixture.fixture_id,
+                    match.fixture.kickoff_utc,
+                    match.result.home_goals,
+                    match.result.away_goals,
+                    match.result.available_at,
+                )
+                for match in sorted(history, key=lambda m: m.result.fixture_id)
+            ],
+            "rules": replace(season.rules, evidence_ref=""),
+            "exceptional_procedure": season.exceptional_procedure,
+            "adjustment_status": season.adjustments.status,
+            "adjustments": sorted(
+                (item.team_id, item.points_delta)
+                for item in season.adjustments.adjustments
+            ),
+            "qualification": (
+                sorted(season.qualification.after_positions)
+                if season.qualification is not None
+                else None
+            ),
+            "rescheduling": sorted(
+                (item.fixture_id, item.kickoff_utc)
+                for item in season.rescheduling_approvals
+            ),
+            "model": MODEL_VERSION,
+            "simulator": _SIMULATOR_VERSION,
+            "runtime": (_PYTHON, _RNG, _CUTOFF_POLICY),
+            "simulation": (prepared.config.seed, prepared.config.trials),
+            "elo": prepared.elo_config,
+            "poisson": prepared.poisson_config,
+        },
+    )
+
+
+def _snapshot_document(
+    inputs: SnapshotInputs, snapshot_id: str, generated_at: datetime
+) -> ForecastSnapshot:
+    season, simulation = inputs.season, inputs.simulation
+    run = simulation.provenance
+    current = calculate_standings(
+        season.season,
+        season.teams,
+        tuple(item.fixture for item in season.fixtures),
+        adjustments=season.adjustments,
+        rules=season.rules,
+        qualification=season.qualification,
+        rescheduling_approvals=season.rescheduling_approvals,
+        exceptional_procedure=season.exceptional_procedure,
+    )
+    _require(not current.blockers, "Current standings are blocked")
+    assignment = assign_representative_table(simulation)
+    predicted = {row.team_id: row.predicted_position for row in assignment.rows}
+    clubs = {club.team_id: club for club in simulation.clubs}
+    names = {team.team_id: team.canonical_name for team in season.teams}
+    teams: list[ForecastTeam] = []
+    for row in current.rows:
+        rank = row.rank
+        if rank is None:
+            raise ValueError("Missing official current rank")
+        club = clubs[row.team_id]
+        teams.append(
+            ForecastTeam(
+                team_id=row.team_id,
+                name=names[row.team_id],
+                actual_rank=rank,
+                predicted_rank=predicted[row.team_id],
+                played=row.played,
+                actual_points=row.adjusted_points,
+                expected_points=club.expected_adjusted_points,
+                position_probabilities=list(club.positions),
+                title_probability=club.title_probability,
+                relegation_probability=club.relegation_probability,
+            )
+        )
+    return ForecastSnapshot(
+        schema_version=1,
+        season_id=run.season_id,
+        snapshot_id=snapshot_id,
+        data_cutoff_at=_format_utc(run.cutoff),
+        generated_at=_format_utc(generated_at),
+        simulation_count=run.simulation.trials,
+        model_version=run.model_version,
+        representative_table_method="maximum-weight-position-assignment",
+        teams=teams,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivedSnapshot:
+    """Full original manifest and byte digest from a trusted publication revision."""
+
+    manifest: LatestManifest
+    snapshot_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class PriorPublication:
+    """Protected checkout of revision, plus the current destination revision reader.
+
+    The caller owns checkout isolation and the archive trust boundary. An
+    archive adapter must retrieve the original committed manifest and snapshot
+    digest from trusted Git history, never infer them from a shortened ID.
+    """
+
+    root: Path
+    revision: str
+    current_revision: Callable[[], str]
+    archived_snapshot: Callable[[str, str], ArchivedSnapshot | None] | None = None
+
+    def validate(self) -> None:
+        _require(
+            re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", self.revision) is not None,
+            "Invalid prior revision",
+        )
+        _require(self.current_revision() == self.revision, "Stale prior revision")
+
+
+@dataclass(frozen=True, slots=True)
+class StagedPublication:
+    """Temporary patch relative to data/ and the required atomic commit base.
+
+    T16 must compare-and-swap the destination ref against expected_revision,
+    apply the entire patch in one commit, and test commit-failure preservation.
+    A successful preparation does not authorize a production write.
+    """
+
+    directory: Path
+    expected_revision: str
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict:
+    result = dict(pairs)
+    _require(len(result) == len(pairs), "Duplicate JSON key")
+    return result
+
+
+def _invalid_constant(_: str) -> None:
+    raise ValueError("Nonstandard JSON constant")
+
+
+def _read_document(
+    root: Path, path: str, *, limit: int = _MAX_DOCUMENT_BYTES
+) -> tuple[dict, bytes] | None:
+    # The prior tree must remain protected against concurrent filesystem edits.
+    _require(
+        re.fullmatch(r"/data/(?:[a-z0-9-]+/)*[a-z0-9-]+\.json", path) is not None,
+        "Invalid prior document path",
+    )
+    relative = Path(path.removeprefix("/data/"))
+    target = root / relative
+    _require(
+        not root.is_symlink() and target.resolve() == root.resolve() / relative,
+        "Unexpected link in prior publication",
+    )
+    if not target.is_file():
+        _require(not target.exists(), "Prior document is not a regular file")
+        return None
+    with target.open("rb") as stream:
+        contents = stream.read(limit + 1)
+    _require(len(contents) <= limit, "Existing document exceeds validation budget")
+    try:
+        document = json.loads(
+            contents, object_pairs_hook=_unique_object, parse_constant=_invalid_constant
+        )
+    except RecursionError as error:
+        raise ValueError("Existing document is too deeply nested") from error
+    _require(type(document) is dict, "Invalid existing document")
+    return document, contents
+
+
+def _read_season(
+    root: Path, season_id: str, *, candidate_id: str
+) -> tuple[LatestManifest | None, list[HistoryEntry], tuple[dict, bytes] | None]:
+    latest = _read_document(root, latest_path(season_id))
+    history = _read_document(root, history_path(season_id))
+    _require((latest is None) == (history is None), "Incomplete prior publication")
+    if latest is None or history is None:
+        return None, [], None
+    manifest, index = latest[0], history[0]
+    _validate_document("latest", manifest)
+    _validate_document("history", index)
+    _require(
+        manifest["season_id"] == index["season_id"] == season_id,
+        "Prior history and manifest seasons differ",
+    )
+    entries = index["snapshots"]
+    matched_latest = False
+    candidate = None
+    budget = 64 * 1024 * 1024
+    for entry in entries:
+        saved = _read_document(
+            root, entry["path"], limit=min(budget, _MAX_DOCUMENT_BYTES)
+        )
+        if saved is None:
+            raise ValueError("Prior history references a missing snapshot")
+        document, contents = saved
+        budget -= len(contents)
+        _validate_document("snapshot", document)
+        _require(
+            document["season_id"] == season_id
+            and all(
+                entry[key] == document[key]
+                for key in ("snapshot_id", "generated_at", "data_cutoff_at")
+            ),
+            "Prior history and snapshot metadata differ",
+        )
+        if entry["snapshot_id"] == manifest["snapshot_id"]:
+            validate_manifest_snapshot(manifest, document)
+            _require(
+                manifest["snapshot_id"] == manifest["input_hash"][:24],
+                "Prior manifest identity is inconsistent",
+            )
+            matched_latest = True
+        if entry["snapshot_id"] == candidate_id:
+            candidate = saved
+    _require(matched_latest, "Prior history does not contain the latest snapshot")
+    return manifest, entries, candidate
+
+
+def _verify_simulation(prepared: _PreparedSimulation, result: SimulationResult) -> None:
+    run = result.provenance
+    _require(
+        run.input_fingerprint == prepared.input_fingerprint
+        and run.cutoff == prepared.cutoff
+        and run.season_id == prepared.snapshot.season.season_id
+        and run.simulation == prepared.config
+        and run.elo == prepared.elo_config
+        and run.poisson == prepared.poisson_config
+        and (
+            run.model_version,
+            run.simulator_version,
+            run.rng,
+            run.cutoff_policy,
+            run.python,
+        )
+        == (MODEL_VERSION, _SIMULATOR_VERSION, _RNG, _CUTOFF_POLICY, _PYTHON),
+        "Simulation provenance does not match prepared inputs",
+    )
+
+
+def _validated_simulation(
+    prepared: _PreparedSimulation | SimulationBlocked,
+) -> _PreparedSimulation:
+    if isinstance(prepared, SimulationBlocked):
+        # A blocked simulation is a valid result type.
+        raise RuntimeError("Simulation is blocked")  # noqa: TRY004
+    return prepared
+
+
+@contextmanager
+def _stage_snapshot(
+    prior: PriorPublication,
+    inputs: SnapshotInputs,
+    history: tuple[EloMatch, ...],
+    *,
+    generated_at: datetime,
+    matchweek_label: str,
+    resolution: SeasonResolution | None = None,
+) -> Iterator[StagedPublication | None]:
+    """Verify separately supplied simulation inputs before any no-op or handoff."""
+    run = inputs.simulation.provenance
+    prepared = _validated_simulation(
+        _prepare_simulation(
+            inputs.season,
+            history,
+            cutoff=run.cutoff,
+            config=run.simulation,
+            elo_config=run.elo,
+            poisson_config=run.poisson,
+        )
+    )
+    _verify_simulation(prepared, inputs.simulation)
+    with _stage_prepared(
+        prior,
+        prepared,
+        lambda: inputs.simulation,
+        generated_at=generated_at,
+        matchweek_label=matchweek_label,
+        resolution=resolution,
+    ) as stage:
+        yield stage
+
+
+@contextmanager
+def _stage_prepared(
+    prior: PriorPublication,
+    prepared: _PreparedSimulation,
+    run_trials: Callable[[], SimulationResult | SimulationBlocked],
+    *,
+    generated_at: datetime,
+    matchweek_label: str,
+    resolution: SeasonResolution | None,
+) -> Iterator[StagedPublication | None]:
+    prior.validate()
+    _format_utc(generated_at)
+    _require(generated_at >= prepared.cutoff, "Generation time precedes data cutoff")
+    season = prepared.snapshot.season
+    _require(
+        season.status is SeasonStatus.ACTIVE, "Publication requires an active season"
+    )
+    _require(
+        prepared.input_fingerprint
+        == _source_fingerprint(
+            prepared.snapshot,
+            prepared.teams,
+            prepared.snapshot.fixtures,
+            prepared.history,
+        ),
+        "Prepared simulation source fingerprint is inconsistent",
+    )
+    digest = _publication_hash(prepared)
+    snapshot_id = digest[:24]
+    season_id = season.season_id
+    latest_file = latest_path(season_id)
+    new_file = snapshot_path(season_id, snapshot_id)
+
+    prior_index = _read_document(prior.root, DATA_INDEX_PATH)
+    display = None
+    if prior_index is not None:
+        _validate_document("season_index", prior_index[0])
+        display = prior_index[0]["display_season_id"]
+    else:
+        seasons = prior.root / "seasons"
+        _require(
+            not seasons.exists() and not seasons.is_symlink(),
+            "Prior global index is missing",
+        )
+    latest, entries, archived = _read_season(
+        prior.root, season_id, candidate_id=snapshot_id
+    )
+    index_changed = (
+        prior_index is None
+        or display != season_id
+        or prior_index[0]["season_status"] != "active"
+    )
+    active_evidence = SeasonResolution(
+        season_id, season_id, ResolutionStatus.ACTIVE, None
+    )
+    if display == season_id:
+        _require(latest is not None, "Prior index points to missing season")
+    else:
+        _require(latest is None, "Cannot reactivate an archived season")
+        if display is not None:
+            display_latest, display_entries, _ = _read_season(
+                prior.root, display, candidate_id=""
+            )
+            _require(display_latest is not None, "Prior index points to missing season")
+            _require(
+                season.start_date
+                > max(
+                    _timestamp(entry["data_cutoff_at"]).date()
+                    for entry in display_entries
+                ),
+                "Season transition would regress the reviewed calendar",
+            )
+    if prior_index is not None and index_changed:
+        _require(
+            resolution == active_evidence,
+            "Season transition lacks current reviewed resolution",
+        )
+
+    if entries:
+        _require(
+            prepared.cutoff
+            >= max(_timestamp(entry["data_cutoff_at"]) for entry in entries),
+            "New forecast predates prior data cutoff",
+        )
+    if latest is not None and latest["input_hash"] == digest:
+        if not index_changed:
+            prior.validate()
+            yield None
+            return
+        manifest = latest
+        artifacts = []
+    elif archived is None:
+        _require(
+            _read_document(prior.root, new_file) is None,
+            "Immutable snapshot already exists",
+        )
+        result = run_trials()
+        if isinstance(result, SimulationBlocked):
+            raise RuntimeError("Simulation is blocked")
+        _verify_simulation(prepared, result)
+        inputs = SnapshotInputs(prepared.snapshot, result)
+        document = _snapshot_document(inputs, snapshot_id, generated_at)
+        manifest = LatestManifest(
+            schema_version=1,
+            season_id=season_id,
+            snapshot_id=snapshot_id,
+            snapshot_path=new_file,
+            input_hash=digest,
+            model_version=document["model_version"],
+            generated_at=document["generated_at"],
+            data_cutoff_at=document["data_cutoff_at"],
+        )
+        validate_manifest_snapshot(manifest, document)
+        record = HistoryEntry(
+            snapshot_id=snapshot_id,
+            generated_at=document["generated_at"],
+            data_cutoff_at=document["data_cutoff_at"],
+            path=new_file,
+            matchweek_label=matchweek_label,
+        )
+        artifacts = [
+            (
+                new_file,
+                serialize_document("snapshot", document, snapshot_inputs=inputs),
+            ),
+            (
+                history_path(season_id),
+                serialize_document(
+                    "history",
+                    HistoryIndex(
+                        schema_version=1,
+                        season_id=season_id,
+                        snapshots=[*entries, record],
+                    ),
+                ),
+            ),
+        ]
+    else:
+        archive = prior.archived_snapshot
+        receipt = None if archive is None else archive(season_id, snapshot_id)
+        document, contents = archived
+        _require(
+            receipt is not None
+            and receipt.manifest["input_hash"] == digest
+            and receipt.snapshot_sha256 == sha256(contents).hexdigest(),
+            "Cannot verify archived publication identity and bytes",
+        )
+        assert receipt is not None
+        manifest = receipt.manifest
+        validate_manifest_snapshot(manifest, document)
+        artifacts = []
+
+    if index_changed:
+        index = SeasonIndex(
+            schema_version=1,
+            active_season_id=season_id,
+            display_season_id=season_id,
+            season_status="active",
+            latest_manifest_path=latest_file,
+        )
+        artifacts.append((DATA_INDEX_PATH, serialize_document("season_index", index)))
+    artifacts.append((latest_file, serialize_document("latest", manifest)))
+    with TemporaryDirectory(prefix="pl-intel-publication-") as directory:
+        stage = Path(directory)
+        for path, contents in artifacts:
+            target = stage / path.removeprefix("/data/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents)
+        prior.validate()
+        yield StagedPublication(stage, prior.revision)

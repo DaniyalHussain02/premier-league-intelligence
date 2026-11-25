@@ -22,6 +22,7 @@ from pl_intel.ranking import (
     AdjustmentEvidence,
     QualificationEvidence,
     StandingsPhase,
+    StandingsResult,
     calculate_standings,
 )
 from pl_intel.rules import Ruleset
@@ -40,6 +41,10 @@ _POSITION_UNITS = lcm(*range(1, 21))
 _TOLERANCE = 1e-12
 _DEFAULT_ELO = EloConfig()
 _DEFAULT_POISSON = PoissonConfig()
+_SIMULATOR_VERSION = "season-monte-carlo-v2"
+_RNG = "random.Random/MT19937"
+_CUTOFF_POLICY = "verified available_at < cutoff; replay by availability and fixture ID"
+_PYTHON = python_version()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,12 +124,10 @@ class SimulationProvenance:
     ruleset_version: str
     evidence_refs: tuple[str, ...]
     model_version: str = MODEL_VERSION
-    simulator_version: str = "season-monte-carlo-v2"
-    rng: str = "random.Random/MT19937"
-    cutoff_policy: str = (
-        "verified available_at < cutoff; replay by availability and fixture ID"
-    )
-    python: str = python_version()
+    simulator_version: str = _SIMULATOR_VERSION
+    rng: str = _RNG
+    cutoff_policy: str = _CUTOFF_POLICY
+    python: str = _PYTHON
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,30 +259,77 @@ def _fingerprint(schema: str, fields: object) -> str:
     return sha256(encoded.encode("ascii")).hexdigest()
 
 
-def simulate_season(
+@dataclass(frozen=True, slots=True)
+class _PreparedSimulation:
+    snapshot: SeasonSnapshot
+    teams: tuple[Team, ...]
+    history: tuple[EloMatch, ...]
+    current: StandingsResult
+    pending: tuple[Fixture, ...]
+    fixed: tuple[Fixture, ...]
+    cutoff: datetime
+    config: SimulationConfig
+    elo_config: EloConfig
+    poisson_config: PoissonConfig
+    input_fingerprint: str
+
+
+def _source_fingerprint(
+    snapshot: SeasonSnapshot,
+    teams: tuple[Team, ...],
+    reviewed: tuple[ReviewedFixture, ...],
+    history: tuple[EloMatch, ...],
+) -> str:
+    """Hash the exact cutoff-specific snapshot and validated ordered history."""
+    return _fingerprint(
+        "t09-source-v1",
+        (
+            snapshot.season,
+            teams,
+            reviewed,
+            snapshot.known_at,
+            snapshot.source_revision,
+            snapshot.evidence_ref,
+            snapshot.rules,
+            snapshot.adjustments.status,
+            snapshot.adjustments.evidence_ref,
+            tuple(sorted(snapshot.adjustments.adjustments, key=lambda a: a.team_id)),
+            snapshot.qualification,
+            snapshot.exceptional_procedure,
+            tuple(sorted(snapshot.rescheduling_approvals, key=lambda a: a.fixture_id)),
+            history,
+        ),
+    )
+
+
+def _rank_snapshot(
+    snapshot: SeasonSnapshot,
+    teams: tuple[Team, ...],
+    records: Iterable[Fixture],
+    phase: StandingsPhase,
+) -> StandingsResult:
+    return calculate_standings(
+        snapshot.season,
+        teams,
+        records,
+        adjustments=snapshot.adjustments,
+        rules=snapshot.rules,
+        qualification=snapshot.qualification,
+        phase=phase,
+        rescheduling_approvals=snapshot.rescheduling_approvals,
+        exceptional_procedure=snapshot.exceptional_procedure,
+    )
+
+
+def _prepare_simulation(
     snapshot: SeasonSnapshot,
     history: Iterable[EloMatch],
     *,
     cutoff: datetime,
-    config: SimulationConfig = SimulationConfig(),
-    elo_config: EloConfig = _DEFAULT_ELO,
-    poisson_config: PoissonConfig = _DEFAULT_POISSON,
-) -> SimulationResult | SimulationBlocked:
-    """Freeze a reviewed season at cutoff and either return all trials or block.
-
-    Upstream callers must independently authenticate exact cutoff-specific
-    fixture revisions and result facts before supplying them. Matching
-    references alone cannot establish authenticity. Missing authentication
-    evidence blocks production publication.
-
-    A fixture revision must be known by the snapshot as-of time, which must
-    be on or before the run cutoff. A finished score must be independently
-    available by the fixture review time and strictly before the run cutoff.
-
-    A postponed record's evidence must establish that its kickoff is the
-    replacement time. Cancelled slots require a reconciled replacement upstream.
-    Trial data is local to the ranking call and never becomes historical input.
-    """
+    config: SimulationConfig,
+    elo_config: EloConfig,
+    poisson_config: PoissonConfig,
+) -> _PreparedSimulation | SimulationBlocked:
     _utc(cutoff)
     _utc(snapshot.known_at)
     require_text(snapshot.source_revision)
@@ -322,26 +372,82 @@ def simulate_season(
         if reason:
             return SimulationBlocked((reason,), fixture_id=record.fixture.fixture_id)
 
-    def rank(records: Iterable[Fixture], phase: StandingsPhase):
-        return calculate_standings(
-            snapshot.season,
-            teams,
-            records,
-            adjustments=snapshot.adjustments,
-            rules=snapshot.rules,
-            qualification=snapshot.qualification,
-            phase=phase,
-            rescheduling_approvals=snapshot.rescheduling_approvals,
-            exceptional_procedure=snapshot.exceptional_procedure,
-        )
-
-    current = rank(fixtures, StandingsPhase.CURRENT)
+    current = _rank_snapshot(snapshot, teams, fixtures, StandingsPhase.CURRENT)
     if current.blockers:
         return SimulationBlocked(tuple(current.blockers))
     pending = tuple(f for f in fixtures if f.status is not FixtureStatus.FINISHED)
     if pending and snapshot.season.status is SeasonStatus.COMPLETE:
         return SimulationBlocked(("complete_season_has_unfinished_fixtures",))
     fixed = tuple(f for f in fixtures if f.status is FixtureStatus.FINISHED)
+    snapshot = replace(
+        snapshot,
+        teams=teams,
+        fixtures=reviewed,
+        adjustments=replace(
+            snapshot.adjustments, adjustments=tuple(snapshot.adjustments.adjustments)
+        ),
+        rescheduling_approvals=tuple(snapshot.rescheduling_approvals),
+    )
+    return _PreparedSimulation(
+        snapshot,
+        teams,
+        history,
+        current,
+        pending,
+        fixed,
+        cutoff,
+        config,
+        elo_config,
+        poisson_config,
+        _source_fingerprint(snapshot, teams, reviewed, history),
+    )
+
+
+def simulate_season(
+    snapshot: SeasonSnapshot,
+    history: Iterable[EloMatch],
+    *,
+    cutoff: datetime,
+    config: SimulationConfig = SimulationConfig(),
+    elo_config: EloConfig = _DEFAULT_ELO,
+    poisson_config: PoissonConfig = _DEFAULT_POISSON,
+) -> SimulationResult | SimulationBlocked:
+    """Freeze a reviewed season at cutoff and either return all trials or block.
+
+    Upstream callers must independently authenticate exact cutoff-specific
+    fixture revisions and result facts before supplying them. Matching
+    references alone cannot establish authenticity. Missing authentication
+    evidence blocks production publication.
+
+    A fixture revision must be known by the snapshot as-of time, which must
+    be on or before the run cutoff. A finished score must be independently
+    available by the fixture review time and strictly before the run cutoff.
+
+    A postponed record's evidence must establish that its kickoff is the
+    replacement time. Cancelled slots require a reconciled replacement upstream.
+    Trial data is local to the ranking call and never becomes historical input.
+    """
+    prepared = _prepare_simulation(
+        snapshot,
+        history,
+        cutoff=cutoff,
+        config=config,
+        elo_config=elo_config,
+        poisson_config=poisson_config,
+    )
+    if isinstance(prepared, SimulationBlocked):
+        return prepared
+    return _run_simulation(prepared)
+
+
+def _run_simulation(
+    prepared: _PreparedSimulation,
+) -> SimulationResult | SimulationBlocked:
+    snapshot, history = prepared.snapshot, prepared.history
+    teams, current = prepared.teams, prepared.current
+    pending, fixed = prepared.pending, prepared.fixed
+    cutoff, config = prepared.cutoff, prepared.config
+    elo_config, poisson_config = prepared.elo_config, prepared.poisson_config
     tables = []
     tail_bound = 0.0
     for fixture in pending:
@@ -378,7 +484,9 @@ def simulate_season(
                         away_goals=away,
                     )
                 )
-            final = rank((*fixed, *sampled), StandingsPhase.FINAL)
+            final = _rank_snapshot(
+                snapshot, teams, (*fixed, *sampled), StandingsPhase.FINAL
+            )
             if final.blockers:
                 return SimulationBlocked(tuple(final.blockers), trial=trial)
             counts = {}
@@ -424,25 +532,7 @@ def simulate_season(
     ):
         raise ArithmeticError("Invalid accumulated position occupancy")
 
-    input_fingerprint = _fingerprint(
-        "t09-source-v1",
-        (
-            snapshot.season,
-            teams,
-            reviewed,
-            snapshot.known_at,
-            snapshot.source_revision,
-            snapshot.evidence_ref,
-            snapshot.rules,
-            snapshot.adjustments.status,
-            snapshot.adjustments.evidence_ref,
-            tuple(sorted(snapshot.adjustments.adjustments, key=lambda a: a.team_id)),
-            snapshot.qualification,
-            snapshot.exceptional_procedure,
-            tuple(sorted(snapshot.rescheduling_approvals, key=lambda a: a.fixture_id)),
-            history,
-        ),
-    )
+    input_fingerprint = prepared.input_fingerprint
     # This is a content comparison key for a future publisher. T09 allocates
     # no snapshot IDs and makes no publication or freshness decisions.
     output_equivalence_fingerprint = _fingerprint(
@@ -459,7 +549,7 @@ def simulate_season(
         snapshot.season.source_ref,
         snapshot.rules.evidence_ref,
     }
-    refs.update(record.evidence_ref for record in reviewed)
+    refs.update(record.evidence_ref for record in snapshot.fixtures)
     refs.update(match.result.source_ref for match in history)
     refs.update(match.identity_source_ref for match in history)
     refs.update(approval.source_ref for approval in snapshot.rescheduling_approvals)
