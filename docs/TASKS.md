@@ -140,15 +140,19 @@
 
 ## Phase 3 — Publishing and user experience
 
-- [ ] **T12 — Static JSON schema and validated serialization**
+- [x] **T12 — Static JSON schema and validated serialization**
   - **Goal:** Define the frontend-readable contract for latest forecast, history, seasons, and evaluation.
   - **Files:** `engine/src/pl_intel/{schemas,publish}.py`, `frontend/src/lib/{types,dataClient}.ts`, `engine/tests/unit/test_json_contract.py`.
   - **Acceptance:**
-    - [ ] Versioned JSON contract includes season, generated-at UTC, data cutoff, simulation count, model version, team metrics, and 20×20 position probabilities where needed.
-    - [ ] Separate season index, latest manifest, immutable snapshot, history index, and backtest JSON; paths under `frontend/public/data/`.
-    - [ ] Validate exactly 20 unique clubs, rank uniqueness, finite numbers, probability totals, and permitted publishable fields before serialization.
-    - [ ] Frontend client loads static HTTP GET JSON only; no dynamic API or credentials in browser.
+    - [x] Versioned JSON contract includes season, generated-at UTC, data cutoff, simulation count, model version, team metrics, and 20×20 position probabilities where needed.
+    - [x] Separate season index, latest manifest, immutable snapshot, history index, and backtest JSON; paths under `frontend/public/data/`.
+    - [x] Validate exactly 20 unique clubs, rank uniqueness, finite numbers, probability totals, and permitted publishable fields before serialization.
+    - [x] Frontend client loads static HTTP GET JSON only; no dynamic API or credentials in browser.
   - **Test:** `python -m pytest engine/tests/unit/test_json_contract.py -q`; `cd frontend && npx tsc --noEmit`.
+  - **Implementation status:** Merged in [PR #20](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/20) at `16b865154077038664b46907b571261e5ada93ab`.
+    - 72 focused Python tests, 391 full engine tests, 20 focused frontend contract tests, and 21 full frontend tests passed. TypeScript, Ruff lint and format, frontend lint and build, and Git whitespace checks passed. GitHub Actions passed on [branch run 45503856900](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45503856900) and [PR run 45504400521](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/45504400521).
+    - Implemented versioned static JSON contracts, allowlisted serialization, canonical standings reconciliation, T09 probability verification, T10 representative assignment, snapshot retry, and same-season fallback. Historical export requires T11 evidence verification and separate trusted redistribution review.
+    - Exact simulation-input provenance binding remains unresolved. Standings and forecast reconciliation do not independently establish that the supplied fixture inventory and eligible historical results exactly match the original simulation inputs. G5b and T03 production publication remain **BLOCKED**.
 
 - [ ] **T13 — Idempotent and failure-safe snapshot publishing**
   - **Goal:** Make changed-data updates append-only and leave the previous valid forecast untouched on errors.
@@ -159,6 +163,7 @@
     - [ ] Any fetch, validation, simulation, or write failure preserves the prior latest pointer, bytes, and original timestamps.
     - [ ] Published artifacts contain no raw licensed inputs or secrets; publishing is blocked by unresolved feasibility gates.
   - **Test:** `python -m pytest engine/tests/integration/test_publish.py -q`; inject failures and compare prior artifact hashes.
+  - **Outstanding production prerequisite:** Establish exact simulation-input provenance binding for the canonical fixture inventory and eligible historical results before production publication.
 
 - [ ] **T14 — Responsive current forecast dashboard**
   - **Goal:** Display current and representative predicted standings, title/relegation probabilities, and freshness metadata.
