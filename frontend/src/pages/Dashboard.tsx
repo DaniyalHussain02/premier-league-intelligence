@@ -2,15 +2,13 @@ import { useEffect, useState } from 'react'
 import { ForecastTable } from '../components/ForecastTable'
 import { StatusBanner } from '../components/StatusBanner'
 import { loadLatestManifest, loadLatestSnapshot, loadSeasonIndex } from '../lib/dataClient'
-import { formatCount, formatUtc, isStale, staleThresholdHours } from '../lib/format'
+import { formatCount, formatUtc, isStale } from '../lib/format'
 import type { ForecastSnapshot, SeasonIndex } from '../lib/types'
 
 type DashboardState =
   | { status: 'loading' }
   | { status: 'unavailable' | 'waiting'; season?: SeasonIndex['season_status'] }
   | { status: 'ready'; season: SeasonIndex['season_status']; snapshot: ForecastSnapshot; fallback: boolean }
-
-const threshold = staleThresholdHours(import.meta.env.VITE_FORECAST_STALE_HOURS)
 
 export function Dashboard() {
   const [request, setRequest] = useState(0)
@@ -80,7 +78,7 @@ export function Dashboard() {
       )}
       {snapshot && (
         <>
-          {isStale(snapshot.generated_at, threshold) && (
+          {isStale(snapshot.generated_at, __FORECAST_STALE_HOURS__) && (
             <StatusBanner>This forecast is stale based on its generation time.</StatusBanner>
           )}
           <dl className="forecast-metadata">
