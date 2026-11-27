@@ -199,12 +199,15 @@
   - **Goal:** Run the approved batch pipeline on a free standard GitHub Actions runner, on schedule and manually.
   - **Files:** `.github/workflows/{ci,forecast}.yml`, `engine/src/pl_intel/cli.py`, `docs/OPERATIONS.md`, workflow tests/fixtures.
   - **Acceptance:**
-    - [ ] Weekly cron and `workflow_dispatch`; pinned actions, minimal permissions, concurrency guard, bounded timeouts, and no paid runners.
+    - [x] Weekly cron and `workflow_dispatch`; pinned actions, minimal permissions, concurrency guard, bounded timeouts, and no paid runners.
     - [ ] Runtime season resolution; secret supplied only via GitHub Actions Secrets; no secrets in logs/artifacts.
     - [ ] No-change run makes no commit; successful changed-data run commits only validated permitted artifacts; failure keeps prior public forecast.
-    - [ ] Document manual rerun, stale-data diagnosis, API quota handling, and how to disable schedule.
+    - [x] Document manual rerun, stale-data diagnosis, API quota handling, and how to disable schedule.
   - **Test:** Workflow syntax check; run `workflow_dispatch` on approved safe fixture/data and inspect job permissions, logs, diff, and no-change/failure behavior.
   - **Outstanding publication integration:** Verify the original manifest and snapshot bytes against trusted Git archive history. Verify that the protected checkout matches the expected prior revision. Enforce production feasibility gates at the write boundary and apply the entire staged patch in one atomic Git update conditional on that revision. Test concurrent updates and commit failures end to end, including preservation of the prior forecast and timestamps.
+  - **Fixture-only implementation:** Merged through [PR #28](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/28) at `77566db625d7e18e8de3e978e1d70e41ad79d584`. Independent security review and regression corrections are complete. All 441 engine tests and 59 frontend tests passed in [PR CI run 46012044615](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/46012044615).
+    - [Hosted manual dispatch 46012896773](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/46012896773) finished in 31 seconds. All 14 focused integration tests passed in 6.18 seconds. The token had Contents read and Metadata read permissions. The run uploaded no artifacts, performed no remote publication, and left the main revision unchanged.
+    - The weekly cron is configured. Actual weekly scheduled execution remains unverified. Production ingestion and runtime season resolution remain unverified. Production write-boundary gate enforcement and deployment preservation remain outstanding. T03, T11, G5b, and production publication remain **BLOCKED**.
 
 - [ ] **T17 — Security, cost, and release review**
   - **Goal:** Complete `docs/SECURITY.md` MUST checks and verify all PRD release gates before deployment.
