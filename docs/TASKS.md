@@ -167,14 +167,18 @@
     - Staging verifies exact simulation-input provenance for the reviewed fixture inventory and cutoff-eligible historical results. Tests verify unchanged inputs skip simulation, validated changes stage immutable snapshots, and failures preserve prior bytes and timestamps.
     - G5b and T03 production publication remain **BLOCKED**. Production integration is tracked under T16.
 
-- [ ] **T14 — Responsive current forecast dashboard**
+- [x] **T14 — Responsive current forecast dashboard**
   - **Goal:** Display current and representative predicted standings, title/relegation probabilities, and freshness metadata.
   - **Files:** `frontend/src/{App.tsx,pages/Dashboard.tsx,components/ForecastTable.tsx,components/StatusBanner.tsx,styles/*}`, `frontend/src/lib/{dataClient,format}.ts`, frontend tests.
   - **Acceptance:**
-    - [ ] All 20 teams, actual rank/points/games played, projected points, assigned predicted rank, title/relegation odds appear with correct labels.
-    - [ ] Show season, generated time, data cutoff, simulation count, stale/pending states, and plain-language representative-table explanation.
-    - [ ] Accessible semantic table, keyboard focus, readable probabilities without color, usable at 320 px; no blank-screen failure on missing JSON.
+    - [x] All 20 teams, actual rank/points/games played, projected points, assigned predicted rank, title/relegation odds appear with correct labels.
+    - [x] Show season, generated time, data cutoff, simulation count, stale/pending states, and plain-language representative-table explanation.
+    - [x] Accessible semantic table, keyboard focus, readable probabilities without color, usable at 320 px; no blank-screen failure on missing JSON.
   - **Test:** `cd frontend && npm run test -- --run && npm run lint && npx tsc --noEmit && npm run build`; manual 320 px inspection.
+  - **Implementation status:** Merged in [PR #24](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/24) at `eb0042c92cbf62a30f12836d551893445e86c593`. All 37 frontend tests passed, along with lint, TypeScript, and the production build. Engine and frontend passed in [PR CI run 46004216978](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/46004216978).
+    - Chromium inspection with synthetic data passed at desktop (1280 px) and 320 px, including keyboard table scrolling, visible focus, and the missing-data retry state.
+    - `FORECAST_STALE_HOURS` configures the build-time stale warning threshold. Missing or invalid values default to 168 hours.
+    - Production data and cross-browser behavior remain unverified. Vite emits a non-blocking warning about the extensionless import under its future native config loader. T03, T11, G5b, and production publication remain **BLOCKED**.
 
 - [ ] **T15 — Forecast history and methodology pages**
   - **Goal:** Show club probability history and transparent retrospective evaluation without inventing prior forecasts.
