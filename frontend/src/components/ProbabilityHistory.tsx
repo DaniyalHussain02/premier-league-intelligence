@@ -9,7 +9,7 @@ type HistoryState = { status: 'loading' | 'unavailable' | 'empty' }
 
 type ComparisonState =
   | { status: 'loading' | 'unavailable' }
-  | { status: 'ready'; snapshots: ForecastSnapshot[] }
+  | { status: 'ready'; snapshots: [ForecastSnapshot, ForecastSnapshot] }
 
 function snapshotLabel(entry: HistoryEntry) {
   return `${entry.matchweek_label} · ${formatUtc(entry.generated_at)}`
@@ -49,8 +49,13 @@ function Comparison({
       ? 'Loading selected snapshots…' : 'The selected snapshots are unavailable.'}</p>
   }
 
-  const clubs = new Map(state.snapshots.flatMap((snapshot) =>
-    snapshot.teams.map((team) => [team.team_id, team.name] as const)))
+  const [first, second] = state.snapshots
+  const clubs = new Map(first.teams.map((team) => [team.team_id, team.name]))
+  // T12 validates unique canonical IDs within each snapshot.
+  if (clubs.size !== second.teams.length
+    || second.teams.some((team) => clubs.get(team.team_id) !== team.name)) {
+    return <p role="status">The selected snapshots are unavailable for comparison because their club rosters differ.</p>
+  }
   const choices = [...clubs].sort((left, right) => left[1].localeCompare(right[1]))
   const selected = clubs.has(club) ? club : choices[0][0]
 

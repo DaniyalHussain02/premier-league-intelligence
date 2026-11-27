@@ -39,6 +39,6 @@ test('loads forecast history and retrospective evaluation only when their views 
   expect(loadBacktestIndex).not.toHaveBeenCalled()
   navigate('#methodology')
   expect(await screen.findByRole('heading', { name: 'Retrospective evaluation' })).toBeTruthy()
-  expect(await screen.findByText('No verified retrospective report is available.')).toBeTruthy()
+  expect(await screen.findByText('Retrospective reports could not be loaded.')).toBeTruthy()
   expect(screen.queryByRole('heading', { name: 'Forecast history' })).toBeNull()
 })

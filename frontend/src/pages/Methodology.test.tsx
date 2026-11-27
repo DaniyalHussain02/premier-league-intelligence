@@ -63,3 +63,11 @@ test('does not display scores for an unavailable indexed retrospective report', 
   expect(await screen.findByText('This retrospective report is unavailable.')).toBeTruthy()
   expect(screen.queryByText('0.592')).toBeNull()
 })
+
+test('distinguishes an unavailable or malformed index from an empty verified index', async () => {
+  vi.mocked(loadBacktestIndex).mockResolvedValue({ status: 'unavailable' })
+  render(<Methodology />)
+  expect(await screen.findByText('Retrospective reports could not be loaded.')).toBeTruthy()
+  expect(screen.queryByText('No verified retrospective report is available.')).toBeNull()
+  expect(loadBacktest).not.toHaveBeenCalled()
+})

@@ -84,7 +84,9 @@ export default function Methodology() {
           and away win across the same matches. Scores range from 0 to 2, with lower scores indicating
           better predictions on that sample.</p>
         {state.status === 'loading' && <p role="status">Loading retrospective reports…</p>}
-        {(state.status === 'unavailable' || (index && index.reports.length === 0)) &&
+        {state.status === 'unavailable' &&
+          <p role="status">Retrospective reports could not be loaded.</p>}
+        {index?.reports.length === 0 &&
           <p role="status">No verified retrospective report is available.</p>}
         {index && selected && (
           <>

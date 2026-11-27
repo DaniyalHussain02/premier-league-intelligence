@@ -110,3 +110,28 @@ test('does not present partial data if a selected snapshot is unavailable', asyn
   expect(await screen.findByText('The selected snapshots are unavailable.')).toBeTruthy()
   expect(screen.queryByRole('table')).toBeNull()
 })
+
+test.each([
+  { team_id: 'different-club' },
+  { name: 'Different name' },
+])('rejects a same-season comparison with inconsistent club identity %j', async (change) => {
+  const last = snapshot('last')
+  last.teams[0] = { ...last.teams[0], ...change }
+  vi.mocked(loadHistorySnapshot).mockImplementation(async (_, id) => ({
+    status: 'ok', data: id === 'last' ? last : snapshot(id),
+  }))
+  render(<ProbabilityHistory />)
+  expect(await screen.findByText(/unavailable for comparison because their club rosters differ/i)).toBeTruthy()
+  expect(screen.queryByRole('table')).toBeNull()
+  expect(screen.queryByLabelText('Club')).toBeNull()
+})
+
+test('matches the same club roster regardless of snapshot row order', async () => {
+  const last = snapshot('last')
+  last.teams.reverse()
+  vi.mocked(loadHistorySnapshot).mockImplementation(async (_, id) => ({
+    status: 'ok', data: id === 'last' ? last : snapshot(id),
+  }))
+  render(<ProbabilityHistory />)
+  expect(await screen.findByRole('table', { name: /alpha/i })).toBeTruthy()
+})
