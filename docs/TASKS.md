@@ -180,15 +180,18 @@
     - `FORECAST_STALE_HOURS` configures the build-time stale warning threshold. Missing or invalid values default to 168 hours.
     - Production data and cross-browser behavior remain unverified. Vite emits a non-blocking warning about the extensionless import under its future native config loader. T03, T11, G5b, and production publication remain **BLOCKED**.
 
-- [ ] **T15 — Forecast history and methodology pages**
+- [x] **T15 — Forecast history and methodology pages**
   - **Goal:** Show club probability history and transparent retrospective evaluation without inventing prior forecasts.
   - **Files:** `frontend/src/components/ProbabilityHistory.tsx`, `frontend/src/pages/Methodology.tsx`, `frontend/src/lib/dataClient.ts`, frontend tests, `docs/METHODOLOGY.md`.
-  - **Acceptance:**
-    - [ ] Club selector and matchweek/snapshot selector use immutable launch-forward snapshots; lazy-load history.
-    - [ ] With fewer than two snapshots, show “History will appear after the next update.”
-    - [ ] Methodology displays Brier score, baseline, season, sample size, cutoff policy, model version, and uncertainty/source limitations.
-    - [ ] Charts have accessible text/table alternatives; retrospective and live histories are visually and textually separate.
+  - **Acceptance (offline implementation):**
+    - [x] Club selector and matchweek/snapshot selector use immutable launch-forward snapshots; lazy-load history.
+    - [x] With fewer than two snapshots, show “History will appear after the next update.”
+    - [x] Methodology displays Brier score, baseline, season, sample size, cutoff policy, model version, and uncertainty/source limitations.
+    - [x] Charts have accessible text/table alternatives; retrospective and live histories are visually and textually separate.
   - **Test:** `cd frontend && npm run test -- --run && npm run lint && npx tsc --noEmit && npm run build`; test zero/one/multiple snapshots.
+  - **Implementation status:** Merged in [PR #26](https://github.com/DaniyalHussain02/premier-league-intelligence/pull/26) at `1114aa38c2269f68d17eb5a62345083f7a8b582a`. All 59 frontend tests and 427 engine tests passed. ESLint, TypeScript, production build, and Git whitespace checks passed. Engine and frontend passed in [PR CI run 46008128717](https://github.com/DaniyalHussain02/premier-league-intelligence/actions/runs/46008128717). Chromium checks with synthetic data passed at 1280 px and 320 px.
+    - Independent review verified that a successfully loaded empty retrospective index and an unavailable or malformed index show distinct states. Snapshot comparisons require identical canonical club IDs and matching names regardless of row order, and show an unavailable state on mismatch.
+    - Production data remains unverified. Verified real-season retrospective evaluation, cross-browser verification, and complete production transfer-size verification remain outstanding. The existing Vite future native-loader warning is non-blocking. T03, T11, G5b, and production publication remain **BLOCKED**.
 
 ## Phase 4 — Operations, review, launch
 
