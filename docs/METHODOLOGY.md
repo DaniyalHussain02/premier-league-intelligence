@@ -25,3 +25,9 @@ The internal report records the study and prediction cutoff policies, the traini
 Upstream independent review must authenticate the exact canonical inventory, completion, permitted source revisions, training coverage, cutoff-specific schedule and status histories, actual kickoffs, score versions and availability. The study cutoff limits which review evidence can substantiate the run. Rescheduling approvals are covered by the season review. Evidence references and a historical label alone do not authenticate a dataset. Incomplete required evidence blocks the whole report without partial scores.
 
 Synthetic tests demonstrate implementation correctness. A verified historical evaluation is still outstanding, including full reconciliation and timestamp evidence for the candidate season. There are no real-world accuracy results from this task. G5b and T03 production publication remain **BLOCKED**.
+
+## Reading published forecasts and evaluation
+
+The forecast history view compares two immutable snapshots from the selected season's launch-forward history index. The snapshot labels show their original generation times, and the comparison shows the original data cutoffs. The title and relegation percentages describe each forecast as published for the selected club.
+
+The methodology view loads retrospective results from the separate backtest index. It shows the model and baseline Brier scores on the same matches, alongside the season, sample size, model version, cutoff policy, and report limitations. The view displays an unavailable state until a verified report is published.

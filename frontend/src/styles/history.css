@@ -1,0 +1,37 @@
+.history-selectors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+}
+
+.history-control {
+  display: grid;
+  gap: 0.25rem;
+  margin-block: 0.75rem;
+  min-width: 0;
+  max-width: 100%;
+  font-weight: 700;
+}
+
+.history-control select {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding-inline: 0.5rem;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #597483;
+  border-radius: 0.25rem;
+  font: inherit;
+  font-weight: 400;
+}
+
+.dashboard .history-table table { min-width: 32rem; }
+.dashboard .history-table th[scope="row"] { min-width: 0; }
+
+.retrospective-report {
+  margin-block: 1.5rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border-inline-start: 0.25rem solid #286578;
+}
