@@ -212,3 +212,49 @@ it("accepts the Python producer's near-tolerance probability matrix", async () =
   fetch.mockResolvedValueOnce(json(valid));
   expect((await loadLatestSnapshot(ref)).status).toBe("ok");
 });
+
+describe("immutable forecast history", () => {
+  const ref = manifest("history-season");
+  const entry = {
+    snapshot_id: ref.snapshot_id, path: ref.snapshot_path, generated_at: ref.generated_at,
+    data_cutoff_at: ref.data_cutoff_at, matchweek_label: "Matchweek 1",
+  };
+  const index = { schema_version: 1 as const, season_id: ref.season_id, snapshots: [entry] };
+
+  it("loads the indexed snapshot by canonical path and preserves stable club IDs", async () => {
+    const fetch = mockFetch();
+    const data = snapshot(ref);
+    fetch.mockResolvedValueOnce(json(data));
+    expect(await loadHistorySnapshot(index, entry.snapshot_id)).toEqual({ status: "ok", data });
+    expect(fetch).toHaveBeenCalledWith(ref.snapshot_path, expect.objectContaining({
+      method: "GET", mode: "same-origin", credentials: "omit", cache: "default",
+    }));
+  });
+
+  it.each([
+    { season_id: "other-season" },
+    { snapshot_id: "other-snapshot" },
+    { generated_at: "2026-11-24T12:00:00.000002Z" },
+    { data_cutoff_at: "2026-11-24T11:00:00Z" },
+    { teams: [] },
+  ])("rejects malformed or mismatched snapshot fields %j", async (patch) => {
+    const fetch = mockFetch();
+    fetch.mockResolvedValueOnce(json({ ...snapshot(ref), ...patch }));
+    expect(await loadHistorySnapshot(index, entry.snapshot_id)).toEqual({ status: "unavailable" });
+  });
+
+  it("rejects an external index path or a snapshot ID absent from the validated index", async () => {
+    const fetch = mockFetch();
+    const unsafe = { ...index, snapshots: [{ ...entry, path: "https://example.test/forecast.json" }] };
+    expect(await loadHistorySnapshot(unsafe, entry.snapshot_id)).toEqual({ status: "unavailable" });
+    expect(await loadHistorySnapshot(index, "unlisted-snapshot")).toEqual({ status: "unavailable" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing indexed snapshot as unavailable", async () => {
+    const fetch = mockFetch();
+    fetch.mockResolvedValueOnce(missing());
+    expect(await loadHistorySnapshot(index, entry.snapshot_id)).toEqual({ status: "unavailable" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
