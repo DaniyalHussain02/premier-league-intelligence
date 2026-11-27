@@ -1,0 +1,98 @@
+:root {
+  color: #172537;
+  background: #f4f7fa;
+  font: 100%/1.55 system-ui, sans-serif;
+}
+
+body { margin: 0; }
+
+.dashboard {
+  max-width: 70rem;
+  margin-inline: auto;
+  padding: clamp(0.75rem, 3vw, 2rem);
+  overflow-wrap: anywhere;
+}
+
+.dashboard h1 {
+  color: #123b47;
+  font-size: clamp(1.5rem, 4vw, 2.5rem);
+  line-height: 1.15;
+  margin-block: 0 1.25rem;
+}
+
+.dashboard h2 { line-height: 1.2; }
+
+.forecast-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 0.75rem;
+  margin-block: 1.25rem;
+}
+
+.forecast-metadata > div,
+.status-banner {
+  background: #fff;
+  border: 1px solid #c8d6e0;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+}
+
+.forecast-metadata dt { font-weight: 700; }
+.forecast-metadata dd { margin: 0; }
+.status-banner { margin-block: 0.75rem; border-inline-start: 0.25rem solid #286578; }
+.status-banner p { margin: 0; }
+
+.status-banner button {
+  margin-top: 0.5rem;
+  min-height: 2.75rem;
+  padding-inline: 0.75rem;
+  border: 1px solid #184f60;
+  border-radius: 0.25rem;
+  color: #fff;
+  background: #184f60;
+  font: inherit;
+  cursor: pointer;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  background: #fff;
+  border: 1px solid #c8d6e0;
+  border-radius: 0.5rem;
+}
+
+.dashboard :focus-visible {
+  outline: 3px solid #165269;
+  outline-offset: 3px;
+}
+
+.dashboard table {
+  width: 100%;
+  min-width: 55rem;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: normal;
+}
+
+.dashboard caption { padding: 0.75rem; text-align: start; }
+.dashboard th,
+.dashboard td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #d8e1e7; }
+.dashboard thead { background: #e2edf0; }
+.dashboard td { text-align: end; }
+table th[scope="row"] {
+  min-width: 9rem;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.dashboard tbody tr:nth-child(even) { background: #f0f5f8; }
+
+.scroll-hint { display: none; }
+@media (max-width: 60rem) {
+  .scroll-hint { display: block; font-size: 0.9375rem; }
+}
+
+@media (max-width: 30rem) {
+  .forecast-metadata { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .forecast-metadata > div { padding: 0.5rem 0.75rem; }
+}
